@@ -1,0 +1,11 @@
+# Don't append a semicolon to empty CSS; a leading ";" invalidates the stylesheet.
+--- a/app/player/web/messages/rewriter/urlResolve.ts
++++ b/app/player/web/messages/rewriter/urlResolve.ts
+@@ -29,6 +29,7 @@ function rewriteCSSLinks(
+   );
+
+   // Ensure the CSS ends with a semicolon
++  if (css.trim() === '') return css;
+   const dontNeedSemi = css.trim().endsWith(';') || css.trim().endsWith('}');
+   return dontNeedSemi ? css : `${css};`;
+ }
