@@ -1,0 +1,44 @@
+name: CI
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: build ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - openreplay-backend
+          - openreplay-dashboard
+          - openreplay-assist
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31.10.6
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ matrix.package }}-${{ hashFiles('flake.lock', 'nix/**') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-${{ matrix.package }}-
+      - run: nix build --print-build-logs ".#${{ matrix.package }}"
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31.10.6
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-test-${{ hashFiles('flake.lock', 'nix/**') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-test-
+      - run: nix build --print-build-logs ".#checks.x86_64-linux.openreplay-module"
