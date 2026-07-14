@@ -194,13 +194,17 @@ let
       export CLICKHOUSE_DATABASE="${cfg.clickhouse.database}"
     '';
 
-  # The init one-shots each service must wait on.
+  # The init one-shots each service must wait on. The seed is included so the
+  # Python API only imports (and decides whether to register the pre-signup
+  # /health route) after a tenant exists — otherwise it would expose the failing
+  # onboarding health-check until its next restart.
   initUnits =
     lib.optionals cfg.initSchema [
       "openreplay-pg-init.service"
       "openreplay-ch-init.service"
     ]
-    ++ lib.optional cfg.initBuckets "openreplay-buckets.service";
+    ++ lib.optional cfg.initBuckets "openreplay-buckets.service"
+    ++ lib.optional cfg.seed.enable "openreplay-seed.service";
 
   # Build a systemd service for one process from a wrapped command.
   mkService =
@@ -361,6 +365,65 @@ in
       type = lib.types.bool;
       default = true;
       description = "Run the one-shot unit that creates the object-storage buckets.";
+    };
+
+    seed = {
+      # OpenReplay only serves the public /health "installation health-check"
+      # (the pre-signup onboarding screen) while no tenant exists; that screen
+      # probes each backend service at its Kubernetes service DNS, which does not
+      # exist in this single-host deployment, so every service shows as failed.
+      # Seeding a tenant + owner login makes the API skip that route entirely and
+      # go straight to the login page, exactly as the upstream signup flow would.
+      enable = lib.mkEnableOption ''
+        seeding an initial tenant and owner login so the dashboard skips the
+        signup/onboarding flow (whose installation health-check assumes a
+        Kubernetes topology and always fails on a single host). Idempotent: it only
+        seeds when no tenant exists yet, so a later password change in the UI is
+        never overwritten'';
+      email = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        example = "admin@example.com";
+        description = "Owner login email (the API validates it as an email address).";
+      };
+      name = lib.mkOption {
+        type = lib.types.str;
+        default = "Admin";
+        description = "Owner display name.";
+      };
+      tenantName = lib.mkOption {
+        type = lib.types.str;
+        default = "OpenReplay";
+        description = "Tenant (organisation) name.";
+      };
+      password = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Owner login password (plain; ends up in the Nix store).";
+      };
+      passwordFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Runtime path to a file holding the owner login password (kept out of the store).";
+      };
+      projectName = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Name of an initial project to seed. Null (the default) seeds only the
+          tenant and owner credentials — no project — so the first project is
+          created from the dashboard like a normal signup.
+        '';
+      };
+      projectKey = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Fixed tracker project key for the seeded project (only when projectName
+          is set). Null lets Postgres generate a random one (read it from the
+          dashboard afterwards).
+        '';
+      };
     };
 
     ports = {
@@ -635,6 +698,15 @@ in
         assertion = !(cfg.s3.secretKey != null && cfg.s3.secretKeyFile != null);
         message = "Set only one of services.openreplay.s3.secretKey / secretKeyFile.";
       }
+      {
+        assertion = !cfg.seed.enable || cfg.seed.email != "";
+        message = "services.openreplay.seed.email must be set when seed.enable is true.";
+      }
+      {
+        assertion =
+          !cfg.seed.enable || (cfg.seed.password != null) != (cfg.seed.passwordFile != null);
+        message = "Set exactly one of services.openreplay.seed.password / passwordFile when seed.enable is true.";
+      }
     ];
 
     users.users = lib.mkIf (cfg.user == "openreplay") {
@@ -786,6 +858,87 @@ in
               mc anonymous set-json ${assetsPolicy} local/sessions-assets
             '';
           path = [ pkgs.minio-client ];
+        };
+      })
+
+      # ---- one-shot: seed initial tenant + owner login (+ optional project) ----
+      # Mirrors the inserts the upstream signup flow performs, but declaratively
+      # and idempotently (only when no tenant exists), so a fresh deploy comes up
+      # past onboarding with a known login. Skipping onboarding is what makes the
+      # k8s-only installation health-check stop being served.
+      (lib.mkIf cfg.seed.enable {
+        openreplay-seed = {
+          description = "OpenReplay initial tenant/owner seed";
+          after = [ "network-online.target" ] ++ lib.optional cfg.initSchema "openreplay-pg-init.service";
+          wants = [ "network-online.target" ];
+          requires = lib.optional cfg.initSchema "openreplay-pg-init.service";
+          wantedBy = [ "multi-user.target" ];
+          serviceConfig =
+            let
+              sec = resolveSecrets [ "OR_PG_PASSWORD" ];
+              usePwFile = cfg.seed.passwordFile != null;
+              envList =
+                lib.mapAttrsToList (n: v: "${n}=${v}") sec.environment
+                ++ lib.optional (!usePwFile) "SEED_PASSWORD=${cfg.seed.password}";
+              creds = sec.loadCredential ++ lib.optional usePwFile "seed-password:${cfg.seed.passwordFile}";
+            in
+            {
+              Type = "oneshot";
+              RemainAfterExit = true;
+              User = cfg.user;
+              Group = cfg.group;
+            }
+            // lib.optionalAttrs (creds != [ ]) { LoadCredential = creds; }
+            // lib.optionalAttrs (envList != [ ]) { Environment = envList; };
+          script =
+            let
+              sec = resolveSecrets [ "OR_PG_PASSWORD" ];
+              # The password is bound as a psql variable (:'pw'), so a passwordFile
+              # value is read at runtime and never serialised into the Nix store.
+              # Non-secret fields are operator config, embedded directly.
+              seedProject = cfg.seed.projectName != null;
+              projCols = lib.optionalString (cfg.seed.projectKey != null) ", project_key";
+              projVals = lib.optionalString (cfg.seed.projectKey != null) ", '${cfg.seed.projectKey}'";
+              # The tenant + owner credentials are the whole seed; a project is
+              # only added when projectName is set. The final statement always
+              # references t and au so every data-modifying CTE runs even when no
+              # project is created.
+              finalStmt =
+                if seedProject then
+                  ''
+                    INSERT INTO public.projects (name, active${projCols})
+                    SELECT '${cfg.seed.projectName}', TRUE${projVals} WHERE EXISTS (SELECT 1 FROM t);''
+                else
+                  ''
+                    SELECT (SELECT count(*) FROM t) AS seeded_tenant, (SELECT count(*) FROM au) AS seeded_auth;'';
+              seedSql = pkgs.writeText "openreplay-seed.sql" ''
+                WITH t AS (
+                  INSERT INTO public.tenants (name)
+                  SELECT '${cfg.seed.tenantName}' WHERE NOT EXISTS (SELECT 1 FROM public.tenants)
+                  RETURNING tenant_id
+                ), u AS (
+                  INSERT INTO public.users (email, role, name)
+                  SELECT '${cfg.seed.email}', 'owner', '${cfg.seed.name}' WHERE EXISTS (SELECT 1 FROM t)
+                  RETURNING user_id
+                ), au AS (
+                  INSERT INTO public.basic_authentication (user_id, password)
+                  SELECT user_id, crypt(:'pw', gen_salt('bf', 12)) FROM u
+                  RETURNING user_id
+                )
+                ${finalStmt}
+              '';
+            in
+            ''
+              ${sec.preamble}
+              ${lib.optionalString (cfg.seed.passwordFile != null) ''
+                export SEED_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/seed-password")"
+              ''}
+              export PGPASSWORD="''${OR_PG_PASSWORD:-}"
+              export PGHOST=${cfg.postgres.host} PGPORT=${toString cfg.postgres.port} PGUSER=${cfg.postgres.user} PGDATABASE=${cfg.postgres.database}
+              psql -v ON_ERROR_STOP=1 -v pw="$SEED_PASSWORD" -f ${seedSql}
+              echo "openreplay: seed applied (no-op if a tenant already existed)"
+            '';
+          path = [ pkgs.postgresql ];
         };
       })
 
