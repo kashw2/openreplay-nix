@@ -11,7 +11,7 @@ in
   owner = "openreplay";
   repo = "openreplay";
   tag = "v${version}";
-  hash = "sha256-pnJb/CI6Gb5ljpncvJfK7EvCDzk+uWy229iJWziQza4=";
+  hash = "sha256-Y0iDGb1m/b0OWdNjxdiqp7zGr4H1KoN4wTlRiCZ9ezc=";
 }).overrideAttrs
   (old: {
     passthru = (old.passthru or { }) // {
