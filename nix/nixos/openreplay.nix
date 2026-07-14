@@ -1,12 +1,15 @@
 { self }:
 # NixOS module that provisions the OpenReplay session-replay services on a host.
-# It runs only the application processes (the Go backend workers, the Go "v2"
-# API, and the Python dashboard API) plus the one-shot schema/bucket init that
-# OpenReplay does not apply itself. It deliberately does NOT stand up Postgres,
-# ClickHouse, Redis, or an object store, nor a reverse-proxy gateway — you point
-# it at existing stores via connection options and route to it with your own
-# nginx/caddy. The static dashboard SPA is exposed as a package option
-# (`config.services.openreplay.dashboardRoot`) for that reverse proxy to serve.
+# It runs only the application processes OpenReplay itself ships — the Go backend
+# workers (http, sink, db, ender, storage, assets, heuristics), the Go
+# integrations service, the Go "v2" API, the Python dashboard API (chalice) and
+# alerts scheduler, the assist live-session server, and the sourcemapreader —
+# plus the one-shot schema/bucket init that OpenReplay does not apply itself. It
+# deliberately does NOT stand up Postgres, ClickHouse, Redis, or an object store,
+# nor a reverse-proxy gateway (the ingress-nginx in upstream's deployment) — you
+# point it at existing stores via connection options and route to it with your
+# own nginx/caddy. The static dashboard SPA (frontend) is exposed as a package
+# option (`config.services.openreplay.dashboardRoot`) for that proxy to serve.
 {
   config,
   lib,
@@ -23,12 +26,13 @@ let
   # the Python dashboard API so the version stays pinned in exactly one place.
   orSrc = cfg.package.src;
 
-  # Python runtime for the legacy dashboard REST API (FastAPI on uvicorn); the
-  # Go "v2" API is upstream's path forward. Not a built package — it runs from
-  # ${orSrc}/api against this env (see the openreplay-api service), so it is
-  # defined inline here rather than exposed as a customisable option. Every
-  # entry maps to a line in the pinned source's api/requirements.txt; all are in
-  # nixpkgs, so no Docker image is needed.
+  # Python runtime for the legacy dashboard REST API (chalice; FastAPI on
+  # uvicorn) and the alerts scheduler; the Go "v2" API is upstream's path
+  # forward. Not a built package — both run from ${orSrc}/api against this env
+  # (see the openreplay-chalice and openreplay-alerts services), so it is defined
+  # inline here rather than exposed as a customisable option. Every entry maps to
+  # a line in the pinned source's api/requirements.txt (a superset of
+  # requirements-alerts.txt); all are in nixpkgs, so no Docker image is needed.
   pyEnv = pkgs.python313.withPackages (
     ps: with ps; [
       fastapi
@@ -302,6 +306,12 @@ in
       defaultText = lib.literalExpression "openreplay-nix.packages.\${system}.openreplay-assist";
       description = "The assist server package (live sessions / co-browsing).";
     };
+    sourcemapreaderPackage = lib.mkOption {
+      type = lib.types.package;
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-sourcemapreader;
+      defaultText = lib.literalExpression "openreplay-nix.packages.\${system}.openreplay-sourcemapreader";
+      description = "The sourcemapreader server package (JS stack-trace symbolication).";
+    };
     dashboardRoot = lib.mkOption {
       type = lib.types.path;
       readOnly = true;
@@ -476,6 +486,31 @@ in
         type = lib.types.port;
         default = 8108;
         description = "Assist health/metrics port.";
+      };
+      heuristics = lib.mkOption {
+        type = lib.types.port;
+        default = 8109;
+        description = "heuristics service health port.";
+      };
+      integrations = lib.mkOption {
+        type = lib.types.port;
+        default = 8110;
+        description = "integrations service HTTP port (proxy /integrations here).";
+      };
+      sourcemapreader = lib.mkOption {
+        type = lib.types.port;
+        default = 8111;
+        description = "sourcemapreader service port (queried by the dashboard API).";
+      };
+      sourcemapreaderHealth = lib.mkOption {
+        type = lib.types.port;
+        default = 8112;
+        description = "sourcemapreader health port.";
+      };
+      alerts = lib.mkOption {
+        type = lib.types.port;
+        default = 8113;
+        description = "alerts scheduler health/listen port.";
       };
     };
 
@@ -1046,6 +1081,37 @@ in
           };
         };
 
+        # Derives events/issues (clicks, inputs, dead clicks, …) from the raw
+        # message stream. A pure Redis-Streams consumer (no TCP listener beyond
+        # its health handler), like sink/db/ender/storage.
+        openreplay-heuristics = goWorker {
+          name = "heuristics";
+          port = cfg.ports.heuristics;
+          secretsNeeded = [ "OR_REDIS_PASSWORD" ];
+          environment = {
+            GROUP_HEURISTICS = "heuristics";
+          };
+        };
+
+        # HTTP service backing the third-party log integrations (Sentry, Datadog,
+        # …); proxied at /integrations. Binds a TCP port and touches Postgres,
+        # Redis and object storage.
+        openreplay-integrations = goWorker {
+          name = "integrations";
+          port = cfg.ports.integrations;
+          objectStore = true;
+          secretsNeeded = [
+            "OR_PG_PASSWORD"
+            "OR_REDIS_PASSWORD"
+            "AWS_SECRET_ACCESS_KEY"
+            "TOKEN_SECRET"
+            "JWT_SECRET"
+          ];
+          environment = {
+            BUCKET_NAME = "mobs";
+          };
+        };
+
         # ---- Go "v2" API (dashboard session search etc.) ----
         openreplay-goapi = mkService {
           description = "OpenReplay Go v2 API";
@@ -1095,9 +1161,9 @@ in
           };
         };
 
-        # ---- Python dashboard REST API (FastAPI/uvicorn) ----
-        openreplay-api = mkService {
-          description = "OpenReplay Python dashboard API";
+        # ---- Python dashboard REST API (chalice; FastAPI/uvicorn) ----
+        openreplay-chalice = mkService {
+          description = "OpenReplay Python dashboard API (chalice)";
           secretsNeeded = [
             "OR_PG_PASSWORD"
             "OR_REDIS_PASSWORD"
@@ -1129,6 +1195,12 @@ in
             LISTEN_PORT = toString cfg.ports.dashboardApi;
             ASSIST_URL = assistUrlEnv;
             ASSIST_KEY = cfg.assistKey;
+            # Stack-trace symbolication: chalice formats this with SMR_KEY
+            # (default "smr") -> http://host:port/smr/sourcemaps, matching the
+            # sourcemapreader server's ${PREFIX}/${SMR_KEY}/sourcemaps route. The
+            # literal {} is Python's str.format placeholder (not a shell/systemd
+            # specifier), so it is passed through unchanged.
+            sourcemaps_reader = "http://${cfg.listenAddress}:${toString cfg.ports.sourcemapreader}/{}/sourcemaps";
           };
           command = pkgs.writeShellApplication {
             name = "openreplay-pyapi";
@@ -1190,6 +1262,110 @@ in
             text = ''
               ${(resolveSecrets [ "ASSIST_JWT_SECRET" ]).preamble}
               exec ${lib.getExe cfg.assistPackage}
+            '';
+          };
+        };
+
+        # ---- sourcemapreader: JS stack-trace symbolication (Node/Express) ----
+        # The dashboard API (chalice) calls this to map minified frames back to
+        # source using sourcemaps stored in object storage. Internal only — not
+        # fronted by the reverse proxy.
+        openreplay-sourcemapreader = mkService {
+          description = "OpenReplay sourcemapreader (stack-trace symbolication)";
+          secretsNeeded = [ "AWS_SECRET_ACCESS_KEY" ];
+          environment = {
+            SERVICE_NAME = "sourcemaps-reader";
+            SMR_HOST = cfg.listenAddress;
+            SMR_PORT = toString cfg.ports.sourcemapreader;
+            # health.js binds its own listener on LISTEN_HOST:HEALTH_PORT.
+            LISTEN_HOST = cfg.listenAddress;
+            HEALTH_PORT = toString cfg.ports.sourcemapreaderHealth;
+            S3_HOST = cfg.s3.endpoint;
+            S3_KEY = cfg.s3.accessKey;
+            AWS_REGION = cfg.s3.region;
+          };
+          command = pkgs.writeShellApplication {
+            name = "openreplay-sourcemapreader-run";
+            runtimeInputs = [ pkgs.coreutils ];
+            text = ''
+              ${(resolveSecrets [ "AWS_SECRET_ACCESS_KEY" ]).preamble}
+              # The Node service reads the S3 secret from S3_SECRET.
+              export S3_SECRET="''${AWS_SECRET_ACCESS_KEY:-}"
+              exec ${lib.getExe cfg.sourcemapreaderPackage}
+            '';
+          };
+        };
+
+        # ---- alerts: notification scheduler (chalice codebase, uvicorn) ----
+        # Runs app_alerts:app — an APScheduler loop over the alerts processor. No
+        # authenticated HTTP surface; it shares the chalice Python env and DB
+        # config. CH_POOL=false / ASSIST_KEY=ignore match upstream's alerts
+        # entrypoint.
+        openreplay-alerts = mkService {
+          description = "OpenReplay alerts scheduler";
+          secretsNeeded = [
+            "OR_PG_PASSWORD"
+            "OR_REDIS_PASSWORD"
+            "OR_CH_PASSWORD"
+            "AWS_SECRET_ACCESS_KEY"
+            "JWT_SECRET"
+            "JWT_REFRESH_SECRET"
+            "JWT_SPOT_SECRET"
+            "JWT_SPOT_REFRESH_SECRET"
+            "ASSIST_JWT_SECRET"
+          ];
+          environment = {
+            pg_host = cfg.postgres.host;
+            pg_port = toString cfg.postgres.port;
+            pg_dbname = cfg.postgres.database;
+            pg_user = cfg.postgres.user;
+            ch_host = cfg.clickhouse.host;
+            ch_port = toString cfg.clickhouse.tcpPort;
+            ch_port_http = toString cfg.clickhouse.httpPort;
+            ch_user = cfg.clickhouse.username;
+            CH_POOL = "false";
+            S3_HOST = cfg.s3.endpoint;
+            S3_KEY = cfg.s3.accessKey;
+            S3_DISABLE_SSL_VERIFY = lib.boolToString cfg.s3.disableSslVerify;
+            sessions_bucket = "mobs";
+            js_cache_bucket = "sessions-assets";
+            sourcemaps_bucket = "sourcemaps";
+            sessions_region = cfg.s3.region;
+            SITE_URL = cfg.siteUrl;
+            LISTEN_PORT = toString cfg.ports.alerts;
+            ASSIST_KEY = "ignore";
+          };
+          command = pkgs.writeShellApplication {
+            name = "openreplay-alerts-run";
+            runtimeInputs = [
+              pyEnv
+              pkgs.coreutils
+            ];
+            text = ''
+              ${(resolveSecrets [
+                "OR_PG_PASSWORD"
+                "OR_REDIS_PASSWORD"
+                "OR_CH_PASSWORD"
+                "AWS_SECRET_ACCESS_KEY"
+                "JWT_SECRET"
+                "JWT_REFRESH_SECRET"
+                "JWT_SPOT_SECRET"
+                "JWT_SPOT_REFRESH_SECRET"
+                "ASSIST_JWT_SECRET"
+              ]).preamble
+              }
+              export pg_password="''${OR_PG_PASSWORD:-}"
+              export ch_password="''${OR_CH_PASSWORD:-}"
+              export S3_SECRET="''${AWS_SECRET_ACCESS_KEY:-}"
+              ${dsnPreamble { }}
+              # uvicorn needs a writable working copy of the app; the alerts
+              # entrypoint runs app_alerts:app rather than chalice's app:app.
+              work="${cfg.stateDir}/alerts"
+              rm -rf "$work" && mkdir -p "$work"
+              cp -r ${orSrc}/api/. "$work/" && chmod -R u+w "$work"
+              cd "$work"
+              [ -f env.default ] && mv -f env.default .env
+              exec uvicorn app_alerts:app --host ${cfg.listenAddress} --port ${toString cfg.ports.alerts} --log-level warning
             '';
           };
         };

@@ -25,6 +25,9 @@
           openreplay-assist = pkgs.callPackage ./nix/packages/openreplay-assist.nix {
             inherit openreplay-src;
           };
+          openreplay-sourcemapreader = pkgs.callPackage ./nix/packages/openreplay-sourcemapreader.nix {
+            inherit openreplay-src;
+          };
           # The Python dashboard API is not a built artifact — it runs from
           # source against a python env defined inline in the NixOS module
           # (services.openreplay.apiPackage), so it is not packaged here.
@@ -34,6 +37,7 @@
               openreplay-backend
               openreplay-dashboard
               openreplay-assist
+              openreplay-sourcemapreader
             ];
           };
         in
@@ -42,6 +46,7 @@
             openreplay-backend
             openreplay-dashboard
             openreplay-assist
+            openreplay-sourcemapreader
             openreplay
             ;
           default = openreplay;

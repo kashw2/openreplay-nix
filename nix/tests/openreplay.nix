@@ -148,20 +148,33 @@ pkgs.testers.runNixOSTest {
         )
 
     with subtest("backend workers start"):
-        for svc in ["http", "sink", "db", "ender", "storage", "assets"]:
+        for svc in ["http", "sink", "db", "ender", "storage", "assets", "heuristics"]:
             machine.wait_for_unit(f"openreplay-{svc}.service")
-        # Only the http worker binds a TCP port; sink/db/ender/storage/assets are
-        # pure Redis-Streams consumers (they build a health.New() handler but never
-        # call ListenAndServe), so they are verified by wait_for_unit alone.
+        # Only http (and, below, integrations) bind a TCP port; sink/db/ender/
+        # storage/assets/heuristics are pure Redis-Streams consumers (they build a
+        # health.New() handler but never call ListenAndServe), so they are
+        # verified by wait_for_unit alone.
         machine.wait_for_open_port(8100)
+
+    with subtest("integrations service starts and listens"):
+        machine.wait_for_unit("openreplay-integrations.service")
+        machine.wait_for_open_port(8110)
 
     with subtest("APIs and assist server start and listen"):
         machine.wait_for_unit("openreplay-goapi.service")
         machine.wait_for_open_port(8106)
-        machine.wait_for_unit("openreplay-api.service")
+        machine.wait_for_unit("openreplay-chalice.service")
         machine.wait_for_open_port(8000)
         machine.wait_for_unit("openreplay-assist.service")
         machine.wait_for_open_port(8107)
+
+    with subtest("sourcemapreader starts and listens"):
+        machine.wait_for_unit("openreplay-sourcemapreader.service")
+        machine.wait_for_open_port(8111)
+
+    with subtest("alerts scheduler starts and listens"):
+        machine.wait_for_unit("openreplay-alerts.service")
+        machine.wait_for_open_port(8113)
 
     with subtest("http ingest endpoint answers"):
         machine.succeed("curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8100/")

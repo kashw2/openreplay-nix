@@ -1,5 +1,6 @@
-# OpenReplay's Go backend, restricted to the six services the session-replay
-# ingestion pipeline needs (http -> sink/db/ender -> storage/assets). Built
+# OpenReplay's Go backend: the session-replay ingestion pipeline
+# (http -> sink/db/ender -> storage/assets), the heuristics event-derivation
+# worker, the integrations HTTP service, and the "v2" API. Built
 # per-binary exactly as upstream's backend/Dockerfile does: CGO with the
 # `dynamic` tag so confluent-kafka-go links against a system librdkafka.
 # The OSS runtime queues through Redis Streams, not Kafka, but the kafka
@@ -32,6 +33,8 @@ buildGoModule {
     "cmd/ender"
     "cmd/storage"
     "cmd/assets"
+    "cmd/heuristics" # Derives events/issues from raw messages
+    "cmd/integrations" # HTTP service for third-party log integrations
     "cmd/api" # The v2 api servers session dashboards
   ];
 
