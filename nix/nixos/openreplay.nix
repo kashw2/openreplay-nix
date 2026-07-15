@@ -387,9 +387,13 @@ in
       enable = lib.mkEnableOption ''
         seeding an initial tenant and owner login so the dashboard skips the
         signup/onboarding flow (whose installation health-check assumes a
-        Kubernetes topology and always fails on a single host). Idempotent: it only
-        seeds when no tenant exists yet, so a later password change in the UI is
-        never overwritten'';
+        Kubernetes topology and always fails on a single host). The seed is
+        reconciled on every rebuild: it inserts the tenant/owner when missing and
+        otherwise updates the existing rows (tenant name, owner email/name,
+        password, optional project) to match this configuration — so changing a
+        value here and redeploying updates the seeded account. Note this overwrites
+        changes an admin made in the UI (e.g. a password reset) on the next
+        rebuild, since the Nix configuration is the source of truth'';
       email = lib.mkOption {
         type = lib.types.str;
         default = "";
@@ -430,8 +434,11 @@ in
         default = null;
         description = ''
           Fixed tracker project key for the seeded project (only when projectName
-          is set). Null lets Postgres generate a random one (read it from the
-          dashboard afterwards).
+          is set). Also the stable identity used to reconcile the project on later
+          rebuilds, so with a fixed key the project can be renamed via projectName.
+          Null lets Postgres generate a random one (read it from the dashboard
+          afterwards); the project is then matched by name for reconciliation, so
+          it cannot be renamed.
         '';
       };
     };
@@ -897,10 +904,11 @@ in
       })
 
       # ---- one-shot: seed initial tenant + owner login (+ optional project) ----
-      # Mirrors the inserts the upstream signup flow performs, but declaratively
-      # and idempotently (only when no tenant exists), so a fresh deploy comes up
-      # past onboarding with a known login. Skipping onboarding is what makes the
-      # k8s-only installation health-check stop being served.
+      # Mirrors the rows the upstream signup flow creates, but declaratively: a
+      # fresh deploy comes up past onboarding with a known login, and every later
+      # rebuild reconciles those rows to this configuration (insert when missing,
+      # otherwise update in place). Skipping onboarding is what makes the k8s-only
+      # installation health-check stop being served.
       (lib.mkIf cfg.seed.enable {
         openreplay-seed = {
           description = "OpenReplay initial tenant/owner seed";
@@ -931,36 +939,84 @@ in
               # The password is bound as a psql variable (:'pw'), so a passwordFile
               # value is read at runtime and never serialised into the Nix store.
               # Non-secret fields are operator config, embedded directly.
+              #
+              # Each entity is an insert-when-missing + update-in-place pair. All
+              # CTEs read the same statement-start snapshot, so for any entity
+              # exactly one of the pair matches: the guarded INSERT fires only when
+              # the row is absent, the UPDATE only when it is present. Data-modifying
+              # CTEs always run to completion whether or not the final SELECT reads
+              # them, so every pair reconciles even when no project is configured.
+              # The owner user is identified by its 'owner' role (not its email), so
+              # the email itself can be changed here and reconciled onto the existing
+              # owner rather than creating a second account.
               seedProject = cfg.seed.projectName != null;
-              projCols = lib.optionalString (cfg.seed.projectKey != null) ", project_key";
-              projVals = lib.optionalString (cfg.seed.projectKey != null) ", '${cfg.seed.projectKey}'";
-              # The tenant + owner credentials are the whole seed; a project is
-              # only added when projectName is set. The final statement always
-              # references t and au so every data-modifying CTE runs even when no
-              # project is created.
-              finalStmt =
-                if seedProject then
-                  ''
-                    INSERT INTO public.projects (name, active${projCols})
-                    SELECT '${cfg.seed.projectName}', TRUE${projVals} WHERE EXISTS (SELECT 1 FROM t);''
+              hasProjectKey = cfg.seed.projectKey != null;
+              projCols = lib.optionalString hasProjectKey ", project_key";
+              projVals = lib.optionalString hasProjectKey ", '${cfg.seed.projectKey}'";
+              # Identify the seeded project by its fixed project_key when one is set
+              # (so its name can be changed here), otherwise fall back to its name.
+              projMatch =
+                if hasProjectKey then
+                  "project_key = '${cfg.seed.projectKey}'"
                 else
-                  ''
-                    SELECT (SELECT count(*) FROM t) AS seeded_tenant, (SELECT count(*) FROM au) AS seeded_auth;'';
+                  "name = '${cfg.seed.projectName}'";
+              projectCtes = lib.optionalString seedProject ''
+                , p_ins AS (
+                  INSERT INTO public.projects (name, active${projCols})
+                  SELECT '${cfg.seed.projectName}', TRUE${projVals}
+                  WHERE NOT EXISTS (SELECT 1 FROM public.projects WHERE ${projMatch})
+                  RETURNING project_id
+                ), p_upd AS (
+                  UPDATE public.projects SET name = '${cfg.seed.projectName}', active = TRUE
+                  WHERE ${projMatch}
+                  RETURNING project_id
+                )'';
+              projectCounts = lib.optionalString seedProject ''
+                ,
+                  (SELECT count(*) FROM p_ins) AS project_inserted,
+                  (SELECT count(*) FROM p_upd) AS project_updated'';
               seedSql = pkgs.writeText "openreplay-seed.sql" ''
-                WITH t AS (
+                WITH t_ins AS (
                   INSERT INTO public.tenants (name)
                   SELECT '${cfg.seed.tenantName}' WHERE NOT EXISTS (SELECT 1 FROM public.tenants)
                   RETURNING tenant_id
-                ), u AS (
+                ), t_upd AS (
+                  UPDATE public.tenants SET name = '${cfg.seed.tenantName}'
+                  WHERE tenant_id = (SELECT min(tenant_id) FROM public.tenants)
+                  RETURNING tenant_id
+                ), u_ins AS (
                   INSERT INTO public.users (email, role, name)
-                  SELECT '${cfg.seed.email}', 'owner', '${cfg.seed.name}' WHERE EXISTS (SELECT 1 FROM t)
+                  SELECT '${cfg.seed.email}', 'owner', '${cfg.seed.name}'
+                  WHERE NOT EXISTS (SELECT 1 FROM public.users WHERE role = 'owner')
                   RETURNING user_id
-                ), au AS (
+                ), u_upd AS (
+                  UPDATE public.users SET email = '${cfg.seed.email}', name = '${cfg.seed.name}'
+                  WHERE user_id = (SELECT min(user_id) FROM public.users WHERE role = 'owner')
+                  RETURNING user_id
+                ), owner_user AS (
+                  SELECT user_id FROM u_ins
+                  UNION ALL
+                  SELECT user_id FROM u_upd
+                ), au_ins AS (
                   INSERT INTO public.basic_authentication (user_id, password)
-                  SELECT user_id, crypt(:'pw', gen_salt('bf', 12)) FROM u
+                  SELECT user_id, crypt(:'pw', gen_salt('bf', 12)) FROM owner_user
+                  WHERE NOT EXISTS (
+                    SELECT 1 FROM public.basic_authentication ba
+                    WHERE ba.user_id = (SELECT user_id FROM owner_user)
+                  )
                   RETURNING user_id
-                )
-                ${finalStmt}
+                ), au_upd AS (
+                  UPDATE public.basic_authentication SET password = crypt(:'pw', gen_salt('bf', 12))
+                  WHERE user_id = (SELECT user_id FROM owner_user)
+                  RETURNING user_id
+                )${projectCtes}
+                SELECT
+                  (SELECT count(*) FROM t_ins) AS tenant_inserted,
+                  (SELECT count(*) FROM t_upd) AS tenant_updated,
+                  (SELECT count(*) FROM u_ins) AS owner_inserted,
+                  (SELECT count(*) FROM u_upd) AS owner_updated,
+                  (SELECT count(*) FROM au_ins) AS password_inserted,
+                  (SELECT count(*) FROM au_upd) AS password_updated${projectCounts};
               '';
             in
             ''
@@ -971,7 +1027,7 @@ in
               export PGPASSWORD="''${OR_PG_PASSWORD:-}"
               export PGHOST=${cfg.postgres.host} PGPORT=${toString cfg.postgres.port} PGUSER=${cfg.postgres.user} PGDATABASE=${cfg.postgres.database}
               psql -v ON_ERROR_STOP=1 -v pw="$SEED_PASSWORD" -f ${seedSql}
-              echo "openreplay: seed applied (no-op if a tenant already existed)"
+              echo "openreplay: seed reconciled (rows inserted when missing, otherwise updated to match config)"
             '';
           path = [ pkgs.postgresql ];
         };
