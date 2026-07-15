@@ -624,7 +624,31 @@ in
       endpoint = lib.mkOption {
         type = lib.types.str;
         example = "https://s3.us-east-1.amazonaws.com";
-        description = "S3-compatible endpoint URL.";
+        description = ''
+          Internal S3-compatible endpoint URL. Used by the ingest/storage
+          workers and for server-side object operations — it only needs to be
+          reachable from this host, so it is typically a loopback address.
+        '';
+      };
+      publicEndpoint = lib.mkOption {
+        type = lib.types.str;
+        default = cfg.assetsOrigin;
+        defaultText = lib.literalExpression "config.services.openreplay.assetsOrigin";
+        description = ''
+          Browser-facing S3 endpoint used to *presign* session-replay asset URLs
+          — the DOM "mob" files the player downloads, canvas frames, and
+          sourcemaps. These presigned URLs are fetched directly by the user's
+          browser, so this must be an origin the browser can reach, and your
+          reverse proxy must route the bucket paths (/mobs, /sessions-assets, …)
+          to the object store while forwarding the original Host header
+          unchanged (SigV4 signs the host, so a rewritten Host fails validation).
+
+          Defaults to assetsOrigin (the public site). Leaving this equal to
+          `endpoint` — e.g. a loopback address — only works when the browser
+          runs on this same host (a local dev stack); on a real deployment the
+          presigned URLs would point at an address the browser cannot reach and
+          replays render blank.
+        '';
       };
       region = lib.mkOption {
         type = lib.types.str;
@@ -1191,6 +1215,12 @@ in
               HTTP_PORT = toString cfg.ports.goApi;
               JWT_ISSUER = "OpenReplay-oss";
               BUCKET_NAME = "mobs";
+              # This API presigns the replay DOM ("mob") download URLs the
+              # player fetches straight from the browser (GET /sessions/{id}/
+              # first-mob), so it must presign against the browser-reachable
+              # origin — not the loopback `endpoint` the other workers use.
+              # Overrides AWS_ENDPOINT from objectStorage above.
+              AWS_ENDPOINT = cfg.s3.publicEndpoint;
               FS_DIR = "${cfg.stateDir}/goapi";
               # Live sessions: query the assist server at sprintf(ASSIST_URL, ASSIST_KEY).
               ASSIST_URL = assistUrlEnv;
@@ -1240,6 +1270,14 @@ in
             ch_port = toString cfg.clickhouse.tcpPort;
             ch_port_http = toString cfg.clickhouse.httpPort;
             ch_user = cfg.clickhouse.username;
+            # Kept on the internal endpoint: chalice presigns via boto3, whose
+            # default addressing style is virtual-hosted for a domain endpoint
+            # (https://<bucket>.host/…) — which the gateway's path-based bucket
+            # routing does not serve. It only presigns supplementary assets
+            # (canvas frames, sourcemaps), not the replay DOM, so it stays
+            # internal; the browser-facing DOM presigning is on the Go API,
+            # which forces path style. (To also expose these via publicEndpoint,
+            # boto3 would need addressing_style=path.)
             S3_HOST = cfg.s3.endpoint;
             S3_KEY = cfg.s3.accessKey;
             S3_DISABLE_SSL_VERIFY = lib.boolToString cfg.s3.disableSslVerify;
