@@ -2,8 +2,8 @@
 # NixOS module that provisions the OpenReplay session-replay services on a host.
 # It runs only the application processes OpenReplay itself ships — the Go backend
 # workers (http, sink, db, ender, storage, assets, heuristics, canvases, images),
-# the Go integrations service, the Go "v2" API, the Python dashboard API (chalice)
-# and
+# the Go integrations service, the Spot recorder service, the Go "v2" API, the
+# Python dashboard API (chalice) and
 # alerts scheduler, the assist live-session server, and the sourcemapreader —
 # plus the one-shot schema/bucket init that OpenReplay does not apply itself. It
 # deliberately does NOT stand up Postgres, ClickHouse, Redis, or an object store,
@@ -529,6 +529,11 @@ in
         type = lib.types.port;
         default = 8115;
         description = "images service port (mobile screenshot uploads at /v1/mobile/images).";
+      };
+      spot = lib.mkOption {
+        type = lib.types.port;
+        default = 8116;
+        description = "spot service port (Spot recorder REST API; proxy /spot here).";
       };
     };
 
@@ -1232,6 +1237,31 @@ in
             SCREENSHOTS_DIR = "screenshots";
             GROUP_IMAGE_STORAGE = "image-storage";
             BUCKET_NAME = "mobs";
+          };
+        };
+
+        # OpenReplay Spot: the browser-extension screen recorder (bug-report
+        # videos), a product distinct from session replay. It serves an
+        # authenticated REST API (/v1/spots, /spots/…) that the extension and
+        # dashboard call — proxy the gateway's /spot/ here, stripping the prefix
+        # (the service serves at NoPrefix). Auth uses the dashboard JWT plus the
+        # dedicated Spot JWT; both, the spots.* Postgres schema, and the spots
+        # bucket already exist. FS_DIR is the shared blobs dir (SPOTS_DIR subtree).
+        openreplay-spot = goWorker {
+          name = "spot";
+          port = cfg.ports.spot;
+          objectStore = true;
+          secretsNeeded = [
+            "OR_PG_PASSWORD"
+            "OR_REDIS_PASSWORD"
+            "AWS_SECRET_ACCESS_KEY"
+            "JWT_SECRET"
+            "JWT_SPOT_SECRET"
+          ];
+          environment = {
+            FS_DIR = "${cfg.stateDir}/blobs";
+            SPOTS_DIR = "spots";
+            BUCKET_NAME = "spots";
           };
         };
 

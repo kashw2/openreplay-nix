@@ -166,6 +166,11 @@ pkgs.testers.runNixOSTest {
         machine.wait_for_unit("openreplay-images.service")
         machine.wait_for_open_port(8115)
 
+    with subtest("spot service starts and listens"):
+        # Serves the Spot recorder REST API (/v1/spots, /spots/…) on a TCP port.
+        machine.wait_for_unit("openreplay-spot.service")
+        machine.wait_for_open_port(8116)
+
     with subtest("APIs and assist server start and listen"):
         machine.wait_for_unit("openreplay-goapi.service")
         machine.wait_for_open_port(8106)

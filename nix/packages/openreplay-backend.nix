@@ -37,6 +37,7 @@ buildGoModule {
     "cmd/integrations" # HTTP service for third-party log integrations
     "cmd/canvases" # Archives <canvas> snapshots for replay
     "cmd/images" # Mobile session screenshot uploads
+    "cmd/spot" # Spot browser-extension screen recorder
     "cmd/api" # The v2 api servers session dashboards
   ];
 
