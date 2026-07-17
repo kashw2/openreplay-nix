@@ -1,0 +1,30 @@
+name: Update
+on:
+  schedule:
+    - cron: 0 6 * * 1 # Weekly
+  workflow_dispatch:
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+      - uses: cachix/install-nix-action@v31.10.6
+        with:
+          nix_path: nixpkgs=flake:nixpkgs
+      - run: nix develop --command nix-update --flake openreplay-src --use-update-script
+      - if: ${{ env.ACT }}
+        run: git remote set-url origin https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/${{ github.repository }}.git
+      - uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+          branch: update/openreplay
+          delete-branch: true
+          add-paths: nix/packages
+          commit-message: 'build(package): update openreplay'
+          title: 'build(package): update openreplay'
+          body: Automated update via `nix-update` (`passthru.updateScript`).

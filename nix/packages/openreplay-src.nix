@@ -1,18 +1,9 @@
 # Single source of truth for the pinned OpenReplay checkout: every package builds
-# from this and the module reads schema SQL / Python API out of it, so the rev and
-# hash are pinned in one place. `.version` is exposed via passthru so consumers
-# inherit it instead of re-declaring the tag.
-#
-# OpenReplay only moves its release tag on releases, not on every commit to main, so
-# a tag can't guarantee the same commit across rebuilds — we pin an explicit `rev`.
-# `.src` is re-exposed via passthru (pointing at the pristine fetcher, which keeps
-# its `rev`/`url`/`outputHash`) so `nix-update` can locate this file and rewrite the
-# `rev` + `hash` in place. Update the whole repo with a single command:
+# from this. We pin an explicit `rev` (upstream only tags on releases, not per
+# commit). `.src` is re-exposed via passthru so nix-update can rewrite the pin.
+# Update everything with:
 #
 #   nix-update --flake openreplay-src --use-update-script
-#
-# which runs the `passthru.updateScript` below: it bumps the pin to the latest main
-# commit, then re-pins every consumer hash the new source invalidates.
 {
   lib,
   fetchFromGitHub,
@@ -22,20 +13,22 @@
   yarn-berry_4,
 }:
 let
-  # `nix-update --version=branch` rewrites this to `<release>-unstable-YYYY-MM-DD`.
-  version = "1.27.0";
+  version = "main-backup-20260717144622-unstable-2026-07-17";
   src = fetchFromGitHub {
     owner = "openreplay";
     repo = "openreplay";
-    # tag = "v${version}";
-    rev = "e702456e66ff8a4d546abe1c3fa72c5c23154a4d";
-    hash = "sha256-V4IZQJPW2yvCEzjHm5ubkAKGOoIdMnOA4fbpBatB0HQ=";
+    # Upstream doesn't release a new tag on every commit into main so builds cannot be idempotent using the `tag` attr
+    rev = "4a0bf3fef45ec7f17a91d5442588455e82a15a29";
+    hash = "sha256-Gc9B6q+0d54tarcumfaoEfRrNDs2dR0DRGnfAvHhMME=";
   };
 in
 src.overrideAttrs (old: {
   passthru = (old.passthru or { }) // {
     inherit version src;
 
+    # Bump the pin, then refresh each consumer's dependency hash against the new
+    # source (nix-update on this alone can't reach them). The dashboard's
+    # missing-hashes.json isn't a hash nix-update knows, so regenerate it first.
     updateScript = lib.getExe (writeShellApplication {
       name = "openreplay-update";
       runtimeInputs = [
@@ -44,8 +37,10 @@ src.overrideAttrs (old: {
         yarn-berry_4.yarn-berry-fetcher
       ];
       text = ''
+        # Latest main commit (rev + hash follow the commit, not a tag).
         nix-update --flake --version=branch=main openreplay-src
 
+        # Regenerate the dashboard's yarn missing-hashes from the new source.
         src="$(nix build --no-link --print-out-paths .#openreplay-src)"
         yarn-berry-fetcher missing-hashes "$src/frontend/yarn.lock" \
           > nix/packages/openreplay-dashboard-missing-hashes.json
@@ -56,7 +51,7 @@ src.overrideAttrs (old: {
           openreplay-sourcemapreader \
           openreplay-sourcemap-uploader \
           openreplay-dashboard; do
-          echo "==> refreshing dependency hashes for $pkg" >&2
+          echo "refreshing dependency hashes for $pkg" >&2
           nix-update --flake --version=skip "$pkg"
         done
       '';

@@ -52,6 +52,17 @@
             ;
           default = openreplay;
         };
+      # `nix-update` for the update workflow (see .github/workflows/update.yml),
+      # entered with `nix develop`.
+      devShells.${system}.default = pkgs.mkShell {
+        packages = [
+          pkgs.nix-update
+          pkgs.git
+        ];
+        # nix-update's --use-update-script builds a wrapper via `import <nixpkgs>`,
+        # so it needs <nixpkgs> on NIX_PATH (CI gets this from install-nix-action).
+        NIX_PATH = "nixpkgs=flake:nixpkgs";
+      };
       nixosModules = rec {
         openreplay = import ./nix/nixos/openreplay.nix { inherit self; };
         default = openreplay;
