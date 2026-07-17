@@ -1,15 +1,12 @@
-# OpenReplay's Go backend: the session-replay ingestion pipeline
-# (http -> sink/db/ender -> storage/assets), the heuristics event-derivation
-# worker, the integrations HTTP service, and the "v2" API. Built
-# per-binary exactly as upstream's backend/Dockerfile does: CGO with the
-# `dynamic` tag so confluent-kafka-go links against a system librdkafka.
-# The OSS runtime queues through Redis Streams, not Kafka, but the kafka
-# bindings are still compiled in, so librdkafka must be present at build.
+# OpenReplay's Go backend — all cmd/* binaries (see subPackages). Built like
+# upstream's backend/Dockerfile: CGO + the `dynamic` tag so confluent-kafka-go
+# links a system librdkafka. The OSS runtime queues through Redis Streams, not
+# Kafka, but the kafka bindings are still compiled in, so librdkafka is required
+# at build time.
 {
   buildGoModule,
-  # The single pinned OpenReplay checkout (see openreplay-src.nix). Used
-  # whole-repo so the services stack can reuse this package's `src` for the
-  # schema SQL; the Go module itself lives under backend/ (modRoot).
+  # Pinned checkout (see openreplay-src.nix), kept whole-repo so the module can
+  # reuse this package's `src` for schema SQL; the Go module is under backend/.
   openreplay-src,
   pkg-config,
   rdkafka,

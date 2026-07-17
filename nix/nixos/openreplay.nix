@@ -1,16 +1,12 @@
 { self }:
-# NixOS module that provisions the OpenReplay session-replay services on a host.
-# It runs only the application processes OpenReplay itself ships — the Go backend
-# workers (http, sink, db, ender, storage, assets, heuristics, canvases, images),
-# the Go integrations service, the Spot recorder service, the Go "v2" API, the
-# Python dashboard API (chalice) and
-# alerts scheduler, the assist live-session server, and the sourcemapreader —
-# plus the one-shot schema/bucket init that OpenReplay does not apply itself. It
-# deliberately does NOT stand up Postgres, ClickHouse, Redis, or an object store,
-# nor a reverse-proxy gateway (the ingress-nginx in upstream's deployment) — you
-# point it at existing stores via connection options and route to it with your
-# own nginx/caddy. The static dashboard SPA (frontend) is exposed as a package
-# option (`config.services.openreplay.dashboardRoot`) for that proxy to serve.
+# NixOS module for the OpenReplay session-replay services. Runs only the app
+# processes OpenReplay ships — the Go backend workers (http, sink, db, ender,
+# storage, assets, heuristics, canvases, images), integrations, spot, the "v2"
+# API, the Python dashboard API (chalice) + alerts scheduler, the assist server,
+# and the sourcemapreader — plus the one-shot schema/bucket init upstream omits.
+# It does NOT stand up Postgres, ClickHouse, Redis, an object store, or a gateway:
+# point it at existing stores via options and front it with your own nginx/caddy.
+# The dashboard SPA is exposed as `config.services.openreplay.dashboardRoot`.
 {
   config,
   lib,
@@ -22,18 +18,13 @@ let
 
   # Path to a named binary inside the Go backend package (cmd/http -> "http").
   orBin = name: lib.getExe' cfg.package name;
-  # The single pinned OpenReplay source checkout, reached through the backend
-  # package's `src` (which is openreplay-src). Reused here for the schema SQL and
-  # the Python dashboard API so the version stays pinned in exactly one place.
+  # The pinned checkout, via the backend package's `src` — reused for schema SQL
+  # and the Python API so the version stays pinned in one place.
   orSrc = cfg.package.src;
 
-  # Python runtime for the legacy dashboard REST API (chalice; FastAPI on
-  # uvicorn) and the alerts scheduler; the Go "v2" API is upstream's path
-  # forward. Not a built package — both run from ${orSrc}/api against this env
-  # (see the openreplay-chalice and openreplay-alerts services), so it is defined
-  # inline here rather than exposed as a customisable option. Every entry maps to
-  # a line in the pinned source's api/requirements.txt (a superset of
-  # requirements-alerts.txt); all are in nixpkgs, so no Docker image is needed.
+  # Python runtime for the chalice dashboard API and alerts scheduler (both run
+  # from ${orSrc}/api against this env — not a built package). Every entry maps to
+  # a line in the source's api/requirements.txt; all are in nixpkgs, no Docker.
   pyEnv = pkgs.python313.withPackages (
     ps: with ps; [
       fastapi
@@ -62,9 +53,8 @@ let
   # with "Could not determine local time zone".
   tzDir = "${pkgs.tzdata}/share/zoneinfo";
 
-  # Redis-Streams "topics" — OSS OpenReplay queues through Redis, not Kafka.
-  # These are the defaults baked into upstream's backend/Dockerfile; the config
-  # structs still mark them required, so they are passed explicitly.
+  # Redis-Streams "topics" (OSS queues through Redis, not Kafka) — upstream
+  # Dockerfile defaults, marked required by the config structs so passed explicitly.
   topics = {
     TOPIC_RAW_WEB = "raw";
     TOPIC_RAW_IOS = "raw-ios";
@@ -90,21 +80,18 @@ let
     USE_S3_TAGS = "false";
   };
 
-  # The APIs build the live-session REST URL as sprintf(ASSIST_URL, ASSIST_KEY),
-  # so the %s placeholder is required (matches upstream chalice/api env).
+  # APIs build the live-session URL as sprintf(ASSIST_URL, ASSIST_KEY), so the %s
+  # placeholder is required (matches upstream chalice/api env).
   assistUrl = "http://${cfg.listenAddress}:${toString cfg.ports.assist}/assist/%s";
-  # systemd expands %-specifiers in Environment= values (%s = the service user's
-  # shell), which would eat the sprintf placeholder above. Double the % so the
-  # process receives a literal %s.
+  # systemd expands %-specifiers in Environment= values, eating the %s above;
+  # double it so the process receives a literal %s.
   assistUrlEnv = lib.replaceStrings [ "%" ] [ "%%" ] assistUrl;
 
-  # ---- secret handling (both plain and file, per secret) ----
-  # Every secret has a plain `xxx` option and a `xxxFile` option. A *File value
-  # is loaded via systemd LoadCredential and exported from the credentials dir
-  # at runtime, so it never lands in the world-readable Nix store. A plain value
-  # is passed via Environment= (which does land in the store — the documented
-  # tradeoff). Passwords embedded in DSNs (Postgres/Redis/ClickHouse) are
-  # assembled at runtime from these exported shell vars.
+  # ---- secret handling (plain + file, per secret) ----
+  # Each secret has a plain `xxx` option and an `xxxFile` option. A *File is loaded
+  # via systemd LoadCredential and exported at runtime, so it never lands in the
+  # store; a plain value goes via Environment= (which does — the documented
+  # tradeoff). DSN passwords (PG/Redis/CH) are assembled at runtime from these vars.
   allSecrets = {
     OR_PG_PASSWORD = {
       plain = cfg.postgres.password;
@@ -151,9 +138,8 @@ let
   # LoadCredential id for an env var (JWT_SECRET -> jwt-secret).
   credName = env: lib.toLower (lib.replaceStrings [ "_" ] [ "-" ] env);
 
-  # Given the list of secret env names a process needs, resolve them into the
-  # systemd LoadCredential entries, the shell preamble that exports the file
-  # ones, and the plain Environment entries for the string ones.
+  # Resolve the secret env names a process needs into LoadCredential entries, the
+  # shell preamble that exports the file-based ones, and plain Environment entries.
   resolveSecrets =
     needed:
     let
@@ -169,10 +155,9 @@ let
       environment = lib.mapAttrs (_: v: v.plain) plains;
     };
 
-  # Runtime DSN assembly. Reads the OR_*_PASSWORD shell vars (set either from a
-  # credential file or a plain Environment value) and builds the connection
-  # strings the services expect, so a file-based password is never serialised
-  # into the unit / store.
+  # Runtime DSN assembly: read the OR_*_PASSWORD shell vars (from a credential file
+  # or Environment) and build the connection strings, so a file-based password is
+  # never serialised into the unit/store.
   dsnPreamble =
     {
       clickhouse ? false,
@@ -199,10 +184,9 @@ let
       export CLICKHOUSE_DATABASE="${cfg.clickhouse.database}"
     '';
 
-  # The init one-shots each service must wait on. The seed is included so the
-  # Python API only imports (and decides whether to register the pre-signup
-  # /health route) after a tenant exists — otherwise it would expose the failing
-  # onboarding health-check until its next restart.
+  # Init one-shots every service waits on. The seed is included so the Python API
+  # only decides whether to register the pre-signup /health route after a tenant
+  # exists — else it exposes the failing onboarding check until its next restart.
   initUnits =
     lib.optionals cfg.initSchema [
       "openreplay-pg-init.service"
@@ -248,8 +232,8 @@ let
       // extraServiceConfig;
     };
 
-  # A Go backend worker (http/sink/db/ender/storage/assets): assemble DSNs +
-  # secrets, ensure the FS scratch dir exists, then exec the binary.
+  # A Go backend worker: assemble DSNs + secrets, ensure the FS scratch dir
+  # exists, then exec the binary.
   goWorker =
     {
       name,
@@ -1051,11 +1035,10 @@ in
       })
 
       # ---- one-shot: seed initial tenant + owner login (+ optional project) ----
-      # Mirrors the rows the upstream signup flow creates, but declaratively: a
-      # fresh deploy comes up past onboarding with a known login, and every later
-      # rebuild reconciles those rows to this configuration (insert when missing,
-      # otherwise update in place). Skipping onboarding is what makes the k8s-only
-      # installation health-check stop being served.
+      # Mirrors the rows the upstream signup flow creates, declaratively: a fresh
+      # deploy comes up past onboarding with a known login, and later rebuilds
+      # reconcile those rows (insert when missing, else update). Skipping onboarding
+      # is what stops the k8s-only installation health-check being served.
       (lib.mkIf cfg.seed.enable {
         openreplay-seed = {
           description = "OpenReplay initial tenant/owner seed";
@@ -1084,18 +1067,15 @@ in
             let
               sec = resolveSecrets [ "OR_PG_PASSWORD" ];
               # The password is bound as a psql variable (:'pw'), so a passwordFile
-              # value is read at runtime and never serialised into the Nix store.
-              # Non-secret fields are operator config, embedded directly.
+              # value is read at runtime, never serialised into the store; non-secret
+              # fields are embedded directly.
               #
-              # Each entity is an insert-when-missing + update-in-place pair. All
-              # CTEs read the same statement-start snapshot, so for any entity
-              # exactly one of the pair matches: the guarded INSERT fires only when
-              # the row is absent, the UPDATE only when it is present. Data-modifying
-              # CTEs always run to completion whether or not the final SELECT reads
-              # them, so every pair reconciles even when no project is configured.
-              # The owner user is identified by its 'owner' role (not its email), so
-              # the email itself can be changed here and reconciled onto the existing
-              # owner rather than creating a second account.
+              # Each entity is an insert-when-missing + update-in-place pair reading
+              # the same statement-start snapshot, so exactly one fires. Data-modifying
+              # CTEs always run to completion (even if the final SELECT ignores them),
+              # so every pair reconciles even with no project configured. The owner is
+              # keyed by its 'owner' role, not its email, so the email can be changed
+              # here and reconciled onto the existing owner rather than duplicated.
               seedProject = cfg.seed.projectName != null;
               hasProjectKey = cfg.seed.projectKey != null;
               projCols = lib.optionalString hasProjectKey ", project_key";
@@ -1296,15 +1276,13 @@ in
           };
         };
 
-        # Archives per-session <canvas> snapshots for replay. The web tracker
-        # POSTs canvas frames to this service's HTTP handler at /v1/web/images
-        # (route the gateway's /ingest/v1/web/images here), which produces them to
-        # the canvas-image stream; the same service then consumes that stream plus
-        # the canvas-trigger stream (session-end signals from ender), buffers the
-        # frames under FS_DIR/CANVAS_DIR, and packs+uploads them to the mobs bucket.
-        # Both canvas topics are already in the shared `topics` set and ender
-        # already emits the trigger. FS_DIR is the same blobs scratch dir the
-        # sink/storage workers use (the service manages its own canvas/ subtree).
+        # Archives per-session <canvas> snapshots for replay. The web tracker POSTs
+        # canvas frames to /v1/web/images (route /ingest/v1/web/images here), which
+        # the service produces to the canvas-image stream and then consumes, along
+        # with the canvas-trigger stream (session-end from ender), buffering under
+        # FS_DIR/CANVAS_DIR before packing+uploading to the mobs bucket. Both topics
+        # are already in `topics` and ender emits the trigger. FS_DIR is the shared
+        # blobs dir (the service manages its own canvas/ subtree).
         openreplay-canvases = goWorker {
           name = "canvases";
           port = cfg.ports.canvases;
@@ -1323,12 +1301,11 @@ in
           };
         };
 
-        # Mobile (iOS/Android) session replay screenshots. The mobile SDK POSTs
-        # screenshot batches to this service's HTTP handler at /v1/mobile/images
-        # (route the gateway's /ingest/v1/mobile/images here, stripping /ingest);
-        # it also consumes the raw-images stream, then packs the screenshots and
-        # uploads them to the mobs bucket. FS_DIR is the shared blobs scratch dir
-        # (the service namespaces its own screenshots/ subtree via SCREENSHOTS_DIR).
+        # Mobile (iOS/Android) replay screenshots. The SDK POSTs batches to
+        # /v1/mobile/images (route /ingest/v1/mobile/images here, stripping /ingest);
+        # the service also consumes the raw-images stream and uploads packed
+        # screenshots to the mobs bucket. FS_DIR is the shared blobs dir
+        # (screenshots/ subtree via SCREENSHOTS_DIR).
         openreplay-images = goWorker {
           name = "images";
           port = cfg.ports.images;
@@ -1347,13 +1324,11 @@ in
           };
         };
 
-        # OpenReplay Spot: the browser-extension screen recorder (bug-report
-        # videos), a product distinct from session replay. It serves an
-        # authenticated REST API (/v1/spots, /spots/…) that the extension and
-        # dashboard call — proxy the gateway's /spot/ here, stripping the prefix
-        # (the service serves at NoPrefix). Auth uses the dashboard JWT plus the
-        # dedicated Spot JWT; both, the spots.* Postgres schema, and the spots
-        # bucket already exist. FS_DIR is the shared blobs dir (SPOTS_DIR subtree).
+        # OpenReplay Spot: the browser-extension screen recorder (bug-report videos),
+        # distinct from session replay. Serves an authenticated REST API (/v1/spots,
+        # /spots/…) — proxy /spot/ here, stripping the prefix (serves at NoPrefix).
+        # Auth uses the dashboard JWT + the Spot JWT; those, the spots.* schema, and
+        # the spots bucket already exist. FS_DIR is the shared blobs dir (SPOTS_DIR).
         openreplay-spot = goWorker {
           name = "spot";
           port = cfg.ports.spot;
@@ -1372,9 +1347,8 @@ in
           };
         };
 
-        # HTTP service backing the third-party log integrations (Sentry, Datadog,
-        # …); proxied at /integrations. Binds a TCP port and touches Postgres,
-        # Redis and object storage.
+        # HTTP service for third-party log integrations (Sentry, Datadog, …);
+        # proxied at /integrations. Binds a TCP port; touches PG, Redis, object store.
         openreplay-integrations = goWorker {
           name = "integrations";
           port = cfg.ports.integrations;
@@ -1414,11 +1388,9 @@ in
               HTTP_PORT = toString cfg.ports.goApi;
               JWT_ISSUER = "OpenReplay-oss";
               BUCKET_NAME = "mobs";
-              # This API presigns the replay DOM ("mob") download URLs the
-              # player fetches straight from the browser (GET /sessions/{id}/
-              # first-mob), so it must presign against the browser-reachable
-              # origin — not the loopback `endpoint` the other workers use.
-              # Overrides AWS_ENDPOINT from objectStorage above.
+              # Presigns the replay DOM ("mob") URLs the player fetches from the
+              # browser, so it must sign against the browser-reachable origin, not
+              # the loopback `endpoint` other workers use. Overrides objectStorage's.
               AWS_ENDPOINT = cfg.s3.publicEndpoint;
               FS_DIR = "${cfg.stateDir}/goapi";
               # Live sessions: query the assist server at sprintf(ASSIST_URL, ASSIST_KEY).
@@ -1469,14 +1441,11 @@ in
             ch_port = toString cfg.clickhouse.tcpPort;
             ch_port_http = toString cfg.clickhouse.httpPort;
             ch_user = cfg.clickhouse.username;
-            # Kept on the internal endpoint: chalice presigns via boto3, whose
-            # default addressing style is virtual-hosted for a domain endpoint
-            # (https://<bucket>.host/…) — which the gateway's path-based bucket
-            # routing does not serve. It only presigns supplementary assets
-            # (canvas frames, sourcemaps), not the replay DOM, so it stays
-            # internal; the browser-facing DOM presigning is on the Go API,
-            # which forces path style. (To also expose these via publicEndpoint,
-            # boto3 would need addressing_style=path.)
+            # Kept internal: chalice presigns via boto3, whose default addressing is
+            # virtual-hosted (https://<bucket>.host/…), which the gateway's path-based
+            # bucket routing doesn't serve. It only presigns supplementary assets
+            # (canvas frames, sourcemaps), not the replay DOM, so internal is fine;
+            # the browser-facing DOM presigning is on the Go API (path style).
             S3_HOST = cfg.s3.endpoint;
             S3_KEY = cfg.s3.accessKey;
             S3_DISABLE_SSL_VERIFY = lib.boolToString cfg.s3.disableSslVerify;
@@ -1488,11 +1457,9 @@ in
             LISTEN_PORT = toString cfg.ports.dashboardApi;
             ASSIST_URL = assistUrlEnv;
             ASSIST_KEY = cfg.assistKey;
-            # Stack-trace symbolication: chalice formats this with SMR_KEY
-            # (default "smr") -> http://host:port/smr/sourcemaps, matching the
-            # sourcemapreader server's ${PREFIX}/${SMR_KEY}/sourcemaps route. The
-            # literal {} is Python's str.format placeholder (not a shell/systemd
-            # specifier), so it is passed through unchanged.
+            # Symbolication: chalice formats this with SMR_KEY (default "smr") ->
+            # http://host:port/smr/sourcemaps, matching the sourcemapreader route.
+            # The literal {} is Python str.format (not shell/systemd), passed through.
             sourcemaps_reader = "http://${cfg.listenAddress}:${toString cfg.ports.sourcemapreader}/{}/sourcemaps";
           };
           command = pkgs.writeShellApplication {
@@ -1519,8 +1486,8 @@ in
               export ch_password="''${OR_CH_PASSWORD:-}"
               export S3_SECRET="''${AWS_SECRET_ACCESS_KEY:-}"
               ${dsnPreamble { }}
-              # uvicorn needs a writable working dir with the app + .env, so copy
-              # the pinned source out of the read-only store on each start.
+              # uvicorn needs a writable workdir with the app + .env; copy the
+              # pinned source out of the store on each start.
               work="${cfg.stateDir}/api"
               rm -rf "$work" && mkdir -p "$work"
               cp -r ${orSrc}/api/. "$work/" && chmod -R u+w "$work"
@@ -1531,10 +1498,9 @@ in
           };
         };
 
-        # ---- assist: live sessions / co-browsing (Node + socket.io signalling) ----
-        # Front it with your reverse proxy: /ws-assist/ (socket.io, WebSocket upgrade,
-        # strip the prefix -> the server's /socket path) and /assist/ (REST live-session
-        # list). WebRTC media is peer-to-peer between agent and visitor.
+        # ---- assist: live sessions / co-browsing (Node + socket.io) ----
+        # Proxy /ws-assist/ (socket.io WebSocket upgrade, strip prefix -> /socket) and
+        # /assist/ (REST). WebRTC media is peer-to-peer between agent and visitor.
         openreplay-assist = mkService {
           description = "OpenReplay assist server (live sessions / co-browsing)";
           secretsNeeded = [ "ASSIST_JWT_SECRET" ];
@@ -1560,9 +1526,8 @@ in
         };
 
         # ---- sourcemapreader: JS stack-trace symbolication (Node/Express) ----
-        # The dashboard API (chalice) calls this to map minified frames back to
-        # source using sourcemaps stored in object storage. Internal only — not
-        # fronted by the reverse proxy.
+        # Called by the chalice API to map minified frames back to source via the
+        # sourcemaps bucket. Internal only — not fronted by the proxy.
         openreplay-sourcemapreader = mkService {
           description = "OpenReplay sourcemapreader (stack-trace symbolication)";
           secretsNeeded = [ "AWS_SECRET_ACCESS_KEY" ];
@@ -1590,10 +1555,9 @@ in
         };
 
         # ---- alerts: notification scheduler (chalice codebase, uvicorn) ----
-        # Runs app_alerts:app — an APScheduler loop over the alerts processor. No
-        # authenticated HTTP surface; it shares the chalice Python env and DB
-        # config. CH_POOL=false / ASSIST_KEY=ignore match upstream's alerts
-        # entrypoint.
+        # Runs app_alerts:app — an APScheduler loop, no authenticated HTTP surface;
+        # shares the chalice Python env and DB config. CH_POOL=false /
+        # ASSIST_KEY=ignore match upstream's alerts entrypoint.
         openreplay-alerts = mkService {
           description = "OpenReplay alerts scheduler";
           secretsNeeded = [

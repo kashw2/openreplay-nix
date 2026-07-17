@@ -28,15 +28,13 @@
           openreplay-sourcemapreader = pkgs.callPackage ./nix/packages/openreplay-sourcemapreader.nix {
             inherit openreplay-src;
           };
-          # Build-time CLI (not a server): app teams run it in CI to upload JS
-          # sourcemaps so error stack traces symbolicate. Kept out of the
-          # `openreplay` deployment bundle below.
+          # Build-time CLI (not a server): upload JS sourcemaps in CI so stack
+          # traces symbolicate. Kept out of the `openreplay` bundle below.
           openreplay-sourcemap-uploader = pkgs.callPackage ./nix/packages/openreplay-sourcemap-uploader.nix {
             inherit openreplay-src;
           };
-          # The Python dashboard API is not a built artifact — it runs from
-          # source against a python env defined inline in the NixOS module
-          # (services.openreplay.apiPackage), so it is not packaged here.
+          # The Python dashboard API isn't a built artifact — it runs from source
+          # against an inline python env in the module, so it isn't packaged here.
           openreplay = pkgs.symlinkJoin {
             name = "openreplay";
             paths = [

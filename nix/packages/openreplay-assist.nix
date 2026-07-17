@@ -1,8 +1,6 @@
-# OpenReplay's "assist" service — the Node.js + socket.io signalling server that
-# powers live sessions and co-browsing (WebRTC media stays peer-to-peer between the
-# agent's and visitor's browsers; this only brokers the connection). Built natively
-# from the pinned checkout. It has no build step, so we install the package + its
-# deps and wrap `node server.js` as the launcher.
+# OpenReplay's "assist" service: the Node.js + socket.io signalling server for live
+# sessions / co-browsing (WebRTC media is peer-to-peer; this only brokers it). No
+# build step — install deps and wrap `node server.js`.
 {
   lib,
   buildNpmPackage,
