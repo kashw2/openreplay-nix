@@ -1,7 +1,7 @@
 { self }:
 # NixOS module that provisions the OpenReplay session-replay services on a host.
 # It runs only the application processes OpenReplay itself ships — the Go backend
-# workers (http, sink, db, ender, storage, assets, heuristics), the Go
+# workers (http, sink, db, ender, storage, assets, heuristics, canvases), the Go
 # integrations service, the Go "v2" API, the Python dashboard API (chalice) and
 # alerts scheduler, the assist live-session server, and the sourcemapreader —
 # plus the one-shot schema/bucket init that OpenReplay does not apply itself. It
@@ -518,6 +518,11 @@ in
         type = lib.types.port;
         default = 8113;
         description = "alerts scheduler health/listen port.";
+      };
+      canvases = lib.mkOption {
+        type = lib.types.port;
+        default = 8114;
+        description = "canvases service health port.";
       };
     };
 
@@ -1170,6 +1175,32 @@ in
           secretsNeeded = [ "OR_REDIS_PASSWORD" ];
           environment = {
             GROUP_HEURISTICS = "heuristics";
+          };
+        };
+
+        # Archives per-session <canvas> snapshots for replay. It consumes the
+        # canvas-image stream (frames the sink extracts from the raw messages) and
+        # the canvas-trigger stream (session-end signals from ender), writing the
+        # frames under FS_DIR/CANVAS_DIR before packing and uploading them to the
+        # mobs bucket. Both canvas topics are already in the shared `topics` set and
+        # ender is already wired to emit the trigger, so this needs no extra
+        # ingestion plumbing. FS_DIR is the same blobs scratch dir the sink/storage
+        # workers use (the service manages its own canvas/ subtree within it).
+        openreplay-canvases = goWorker {
+          name = "canvases";
+          port = cfg.ports.canvases;
+          objectStore = true;
+          secretsNeeded = [
+            "OR_PG_PASSWORD"
+            "OR_REDIS_PASSWORD"
+            "AWS_SECRET_ACCESS_KEY"
+            "TOKEN_SECRET"
+          ];
+          environment = {
+            FS_DIR = "${cfg.stateDir}/blobs";
+            CANVAS_DIR = "canvas";
+            GROUP_CANVAS_IMAGE = "canvas-image";
+            BUCKET_NAME = "mobs";
           };
         };
 

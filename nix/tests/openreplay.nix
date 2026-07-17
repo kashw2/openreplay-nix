@@ -148,11 +148,11 @@ pkgs.testers.runNixOSTest {
         )
 
     with subtest("backend workers start"):
-        for svc in ["http", "sink", "db", "ender", "storage", "assets", "heuristics"]:
+        for svc in ["http", "sink", "db", "ender", "storage", "assets", "heuristics", "canvases"]:
             machine.wait_for_unit(f"openreplay-{svc}.service")
         # Only http (and, below, integrations) bind a TCP port; sink/db/ender/
-        # storage/assets/heuristics are pure Redis-Streams consumers (they build a
-        # health.New() handler but never call ListenAndServe), so they are
+        # storage/assets/heuristics/canvases are pure Redis-Streams consumers (they
+        # build a health.New() handler but never call ListenAndServe), so they are
         # verified by wait_for_unit alone.
         machine.wait_for_open_port(8100)
 
