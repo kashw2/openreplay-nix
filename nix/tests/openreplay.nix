@@ -160,6 +160,12 @@ pkgs.testers.runNixOSTest {
         machine.wait_for_unit("openreplay-integrations.service")
         machine.wait_for_open_port(8110)
 
+    with subtest("images service starts and listens"):
+        # Binds a TCP port for mobile screenshot uploads (/v1/mobile/images), unlike
+        # the pure Redis-Streams consumers above.
+        machine.wait_for_unit("openreplay-images.service")
+        machine.wait_for_open_port(8115)
+
     with subtest("APIs and assist server start and listen"):
         machine.wait_for_unit("openreplay-goapi.service")
         machine.wait_for_open_port(8106)

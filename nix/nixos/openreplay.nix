@@ -1,8 +1,9 @@
 { self }:
 # NixOS module that provisions the OpenReplay session-replay services on a host.
 # It runs only the application processes OpenReplay itself ships — the Go backend
-# workers (http, sink, db, ender, storage, assets, heuristics, canvases), the Go
-# integrations service, the Go "v2" API, the Python dashboard API (chalice) and
+# workers (http, sink, db, ender, storage, assets, heuristics, canvases, images),
+# the Go integrations service, the Go "v2" API, the Python dashboard API (chalice)
+# and
 # alerts scheduler, the assist live-session server, and the sourcemapreader —
 # plus the one-shot schema/bucket init that OpenReplay does not apply itself. It
 # deliberately does NOT stand up Postgres, ClickHouse, Redis, or an object store,
@@ -523,6 +524,11 @@ in
         type = lib.types.port;
         default = 8114;
         description = "canvases service port (web canvas uploads at /v1/web/images).";
+      };
+      images = lib.mkOption {
+        type = lib.types.port;
+        default = 8115;
+        description = "images service port (mobile screenshot uploads at /v1/mobile/images).";
       };
     };
 
@@ -1201,6 +1207,30 @@ in
             FS_DIR = "${cfg.stateDir}/blobs";
             CANVAS_DIR = "canvas";
             GROUP_CANVAS_IMAGE = "canvas-image";
+            BUCKET_NAME = "mobs";
+          };
+        };
+
+        # Mobile (iOS/Android) session replay screenshots. The mobile SDK POSTs
+        # screenshot batches to this service's HTTP handler at /v1/mobile/images
+        # (route the gateway's /ingest/v1/mobile/images here, stripping /ingest);
+        # it also consumes the raw-images stream, then packs the screenshots and
+        # uploads them to the mobs bucket. FS_DIR is the shared blobs scratch dir
+        # (the service namespaces its own screenshots/ subtree via SCREENSHOTS_DIR).
+        openreplay-images = goWorker {
+          name = "images";
+          port = cfg.ports.images;
+          objectStore = true;
+          secretsNeeded = [
+            "OR_PG_PASSWORD"
+            "OR_REDIS_PASSWORD"
+            "AWS_SECRET_ACCESS_KEY"
+            "TOKEN_SECRET"
+          ];
+          environment = {
+            FS_DIR = "${cfg.stateDir}/blobs";
+            SCREENSHOTS_DIR = "screenshots";
+            GROUP_IMAGE_STORAGE = "image-storage";
             BUCKET_NAME = "mobs";
           };
         };

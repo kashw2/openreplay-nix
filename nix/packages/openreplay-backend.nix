@@ -36,6 +36,7 @@ buildGoModule {
     "cmd/heuristics" # Derives events/issues from raw messages
     "cmd/integrations" # HTTP service for third-party log integrations
     "cmd/canvases" # Archives <canvas> snapshots for replay
+    "cmd/images" # Mobile session screenshot uploads
     "cmd/api" # The v2 api servers session dashboards
   ];
 
