@@ -378,6 +378,32 @@ in
       description = "Run the one-shot unit that creates the object-storage buckets.";
     };
 
+    retention = {
+      days = lib.mkOption {
+        type = lib.types.nullOr lib.types.ints.positive;
+        default = null;
+        example = 90;
+        description = ''
+          Data-retention window in days. OpenReplay OSS ships no time-based
+          expiry — session metadata and events are kept indefinitely (only
+          soft-deleted rows expire after a day), and replay blobs accumulate in
+          the object store. Null (the default) preserves that behaviour.
+
+          When set, the one-shot `openreplay-retention` unit applies a
+          time-based ClickHouse `TTL` to the session (`experimental.sessions`)
+          and event (`product_analytics.events`) tables so rows older than the
+          window are dropped, and — when `initBuckets` is also on — the buckets
+          one-shot adds an object-store lifecycle rule expiring the replay blobs
+          in the session buckets (`mobs`, `sessions-assets`,
+          `sessions-mobile-assets`) after the same window.
+
+          The ClickHouse TTL applies unconditionally; the object-store expiry
+          requires the S3 backend to honour bucket lifecycle rules (SeaweedFS
+          and MinIO do). Both are idempotent and reconciled on every rebuild.
+        '';
+      };
+    };
+
     seed = {
       # OpenReplay only serves the public /health "installation health-check"
       # (the pre-signup onboarding screen) while no tenant exists; that screen
@@ -888,6 +914,58 @@ in
         };
       })
 
+      # ---- one-shot: ClickHouse data-retention TTLs ----
+      # OpenReplay OSS keeps session/event data indefinitely; when a retention
+      # window is configured, apply a time-based TTL so ClickHouse drops rows
+      # older than it. MODIFY TTL replaces the table's TTL, so this is idempotent
+      # and reconciles on every rebuild. Object-store blob expiry is handled in
+      # the buckets one-shot (lifecycle rules).
+      (lib.mkIf (cfg.retention.days != null && cfg.initSchema) {
+        openreplay-retention = {
+          description = "OpenReplay ClickHouse data-retention TTLs";
+          after = [
+            "network-online.target"
+            "openreplay-ch-init.service"
+          ];
+          wants = [ "network-online.target" ];
+          requires = [ "openreplay-ch-init.service" ];
+          wantedBy = [ "multi-user.target" ];
+          serviceConfig =
+            let
+              sec = resolveSecrets [ "OR_CH_PASSWORD" ];
+            in
+            {
+              Type = "oneshot";
+              RemainAfterExit = true;
+              User = cfg.user;
+              Group = cfg.group;
+              Environment = [ "TZDIR=${tzDir}" ] ++ lib.mapAttrsToList (n: v: "${n}=${v}") sec.environment;
+            }
+            // lib.optionalAttrs (sec.loadCredential != [ ]) { LoadCredential = sec.loadCredential; };
+          script =
+            let
+              sec = resolveSecrets [ "OR_CH_PASSWORD" ];
+              d = toString cfg.retention.days;
+            in
+            ''
+              ${sec.preamble}
+              args=(--host ${cfg.clickhouse.host} --port ${toString cfg.clickhouse.tcpPort} --user ${cfg.clickhouse.username})
+              if [ -n "''${OR_CH_PASSWORD:-}" ]; then
+                args+=(--password "$OR_CH_PASSWORD")
+              fi
+              # Sessions expire on their `datetime`; events expire on `created_at`
+              # (a DateTime64, cast to DateTime) while preserving the upstream
+              # soft-delete purge as a second TTL clause.
+              clickhouse-client "''${args[@]}" --query \
+                "ALTER TABLE experimental.sessions MODIFY TTL datetime + INTERVAL ${d} DAY"
+              clickhouse-client "''${args[@]}" --query \
+                "ALTER TABLE product_analytics.events MODIFY TTL toDateTime(created_at) + INTERVAL ${d} DAY, _deleted_at + INTERVAL 1 DAY DELETE WHERE _deleted_at != '1970-01-01 00:00:00'"
+              echo "openreplay: clickhouse retention TTL set to ${d} days"
+            '';
+          path = [ pkgs.clickhouse ];
+        };
+      })
+
       # ---- one-shot: object-storage buckets ----
       (lib.mkIf cfg.initBuckets {
         openreplay-buckets = {
@@ -929,6 +1007,26 @@ in
                   ];
                 }
               );
+              # Replay-blob buckets that a retention window should expire (only
+              # those actually being created). `mc ilm import` replaces the whole
+              # lifecycle config, so re-running reconciles rather than duplicates.
+              retentionBuckets = builtins.filter (b: builtins.elem b cfg.s3.buckets) [
+                "mobs"
+                "sessions-assets"
+                "sessions-mobile-assets"
+              ];
+              retentionLifecycle = pkgs.writeText "openreplay-retention-lifecycle.json" (
+                builtins.toJSON {
+                  Rules = [
+                    {
+                      ID = "openreplay-retention";
+                      Status = "Enabled";
+                      Filter = { };
+                      Expiration.Days = cfg.retention.days;
+                    }
+                  ];
+                }
+              );
             in
             ''
               ${sec.preamble}
@@ -938,6 +1036,15 @@ in
                 mc mb -p "local/$b"
               done
               mc anonymous set-json ${assetsPolicy} local/sessions-assets
+              ${lib.optionalString (cfg.retention.days != null) ''
+                # Expire replay blobs after the retention window. Best-effort: warn
+                # (don't fail bucket init) if the object store can't store lifecycle
+                # rules — the ClickHouse TTL still bounds discoverable session data.
+                for b in ${lib.concatStringsSep " " retentionBuckets}; do
+                  mc ilm import "local/$b" < ${retentionLifecycle} \
+                    || echo "openreplay: warning: lifecycle expiry not applied to $b (S3 backend may not support lifecycle rules)" >&2
+                done
+              ''}
             '';
           path = [ pkgs.minio-client ];
         };

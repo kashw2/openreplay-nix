@@ -82,6 +82,9 @@ pkgs.testers.runNixOSTest {
         clickhouse.host = "127.0.0.1";
         redis.host = "127.0.0.1";
 
+        # Exercise the data-retention path (ClickHouse TTLs + object lifecycle).
+        retention.days = 30;
+
         s3 = {
           endpoint = "http://127.0.0.1:9002";
           region = "us-east-1";
@@ -145,6 +148,18 @@ pkgs.testers.runNixOSTest {
         machine.succeed(
             "psql -h 127.0.0.1 -U postgres -d openreplay -tAc "
             "\"SELECT to_regclass('public.tenants')\" | grep -q tenants"
+        )
+
+    with subtest("retention TTLs are applied to ClickHouse"):
+        machine.wait_for_unit("openreplay-retention.service")
+        # MODIFY TTL leaves a TTL clause on the session table's DDL.
+        machine.succeed(
+            "clickhouse-client --query 'SHOW CREATE TABLE experimental.sessions' | grep -q TTL"
+        )
+        # ClickHouse re-renders `INTERVAL 30 DAY` as `toIntervalDay(30)` in DDL.
+        machine.succeed(
+            "clickhouse-client --query 'SHOW CREATE TABLE product_analytics.events' "
+            "| grep -qE 'toIntervalDay\\(30\\)|INTERVAL 30 DAY'"
         )
 
     with subtest("backend workers start"):
