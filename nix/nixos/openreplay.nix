@@ -522,7 +522,7 @@ in
       canvases = lib.mkOption {
         type = lib.types.port;
         default = 8114;
-        description = "canvases service health port.";
+        description = "canvases service port (web canvas uploads at /v1/web/images).";
       };
     };
 
@@ -1178,14 +1178,15 @@ in
           };
         };
 
-        # Archives per-session <canvas> snapshots for replay. It consumes the
-        # canvas-image stream (frames the sink extracts from the raw messages) and
-        # the canvas-trigger stream (session-end signals from ender), writing the
-        # frames under FS_DIR/CANVAS_DIR before packing and uploading them to the
-        # mobs bucket. Both canvas topics are already in the shared `topics` set and
-        # ender is already wired to emit the trigger, so this needs no extra
-        # ingestion plumbing. FS_DIR is the same blobs scratch dir the sink/storage
-        # workers use (the service manages its own canvas/ subtree within it).
+        # Archives per-session <canvas> snapshots for replay. The web tracker
+        # POSTs canvas frames to this service's HTTP handler at /v1/web/images
+        # (route the gateway's /ingest/v1/web/images here), which produces them to
+        # the canvas-image stream; the same service then consumes that stream plus
+        # the canvas-trigger stream (session-end signals from ender), buffers the
+        # frames under FS_DIR/CANVAS_DIR, and packs+uploads them to the mobs bucket.
+        # Both canvas topics are already in the shared `topics` set and ender
+        # already emits the trigger. FS_DIR is the same blobs scratch dir the
+        # sink/storage workers use (the service manages its own canvas/ subtree).
         openreplay-canvases = goWorker {
           name = "canvases";
           port = cfg.ports.canvases;
