@@ -42,6 +42,7 @@
         in
         {
           inherit
+            openreplay-src
             openreplay-backend
             openreplay-dashboard
             openreplay-assist
