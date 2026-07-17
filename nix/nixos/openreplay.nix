@@ -87,11 +87,10 @@ let
   # double it so the process receives a literal %s.
   assistUrlEnv = lib.replaceStrings [ "%" ] [ "%%" ] assistUrl;
 
-  # ---- secret handling (plain + file, per secret) ----
-  # Each secret has a plain `xxx` option and an `xxxFile` option. A *File is loaded
-  # via systemd LoadCredential and exported at runtime, so it never lands in the
-  # store; a plain value goes via Environment= (which does — the documented
-  # tradeoff). DSN passwords (PG/Redis/CH) are assembled at runtime from these vars.
+  # Secret handling: each secret has a plain `xxx` and an `xxxFile` option. A *File
+  # loads via systemd LoadCredential (never hits the store); a plain value goes via
+  # Environment= (which does — the documented tradeoff). DSN passwords (PG/Redis/CH)
+  # are assembled at runtime from these vars.
   allSecrets = {
     OR_PG_PASSWORD = {
       plain = cfg.postgres.password;
@@ -389,22 +388,17 @@ in
     };
 
     seed = {
-      # OpenReplay only serves the public /health "installation health-check"
-      # (the pre-signup onboarding screen) while no tenant exists; that screen
-      # probes each backend service at its Kubernetes service DNS, which does not
-      # exist in this single-host deployment, so every service shows as failed.
-      # Seeding a tenant + owner login makes the API skip that route entirely and
-      # go straight to the login page, exactly as the upstream signup flow would.
       enable = lib.mkEnableOption ''
         seeding an initial tenant and owner login so the dashboard skips the
-        signup/onboarding flow (whose installation health-check assumes a
-        Kubernetes topology and always fails on a single host). The seed is
-        reconciled on every rebuild: it inserts the tenant/owner when missing and
-        otherwise updates the existing rows (tenant name, owner email/name,
-        password, optional project) to match this configuration — so changing a
-        value here and redeploying updates the seeded account. Note this overwrites
-        changes an admin made in the UI (e.g. a password reset) on the next
-        rebuild, since the Nix configuration is the source of truth'';
+        signup/onboarding flow. That flow's installation health-check probes each
+        backend at its Kubernetes service DNS, which is absent on a single host, so
+        it always fails; seeding a tenant makes the API skip the route and go
+        straight to login. The seed is reconciled on every rebuild: it inserts the
+        tenant/owner when missing and otherwise updates the existing rows (tenant
+        name, owner email/name, password, optional project) to match this config —
+        so changing a value here and redeploying updates the seeded account, and
+        also overwrites UI changes (e.g. a password reset) on the next rebuild,
+        since the Nix configuration is the source of truth'';
       email = lib.mkOption {
         type = lib.types.str;
         default = "";
@@ -811,7 +805,7 @@ in
     users.groups = lib.mkIf (cfg.group == "openreplay") { openreplay = { }; };
 
     systemd.services = lib.mkMerge [
-      # ---- one-shot: Postgres extensions + schema ----
+      # one-shot: Postgres extensions + schema
       (lib.mkIf cfg.initSchema {
         openreplay-pg-init = {
           description = "OpenReplay Postgres schema init";
@@ -857,7 +851,7 @@ in
         };
       })
 
-      # ---- one-shot: ClickHouse databases + schema ----
+      # one-shot: ClickHouse databases + schema
       (lib.mkIf cfg.initSchema {
         openreplay-ch-init = {
           description = "OpenReplay ClickHouse schema init";
@@ -898,12 +892,10 @@ in
         };
       })
 
-      # ---- one-shot: ClickHouse data-retention TTLs ----
-      # OpenReplay OSS keeps session/event data indefinitely; when a retention
-      # window is configured, apply a time-based TTL so ClickHouse drops rows
-      # older than it. MODIFY TTL replaces the table's TTL, so this is idempotent
-      # and reconciles on every rebuild. Object-store blob expiry is handled in
-      # the buckets one-shot (lifecycle rules).
+      # one-shot: ClickHouse data-retention TTLs. OSS keeps session/event data
+      # indefinitely; a configured window applies a time-based TTL so ClickHouse
+      # drops older rows. MODIFY TTL replaces the table's TTL — idempotent, reconciled
+      # each rebuild. Object-store blob expiry is in the buckets one-shot.
       (lib.mkIf (cfg.retention.days != null && cfg.initSchema) {
         openreplay-retention = {
           description = "OpenReplay ClickHouse data-retention TTLs";
@@ -950,7 +942,7 @@ in
         };
       })
 
-      # ---- one-shot: object-storage buckets ----
+      # one-shot: object-storage buckets
       (lib.mkIf cfg.initBuckets {
         openreplay-buckets = {
           description = "OpenReplay object-storage bucket init";
@@ -1034,11 +1026,10 @@ in
         };
       })
 
-      # ---- one-shot: seed initial tenant + owner login (+ optional project) ----
-      # Mirrors the rows the upstream signup flow creates, declaratively: a fresh
-      # deploy comes up past onboarding with a known login, and later rebuilds
-      # reconcile those rows (insert when missing, else update). Skipping onboarding
-      # is what stops the k8s-only installation health-check being served.
+      # one-shot: seed initial tenant + owner login (+ optional project). Mirrors the
+      # rows the upstream signup flow creates: a fresh deploy comes up past onboarding
+      # with a known login, and later rebuilds reconcile them (insert or update).
+      # Skipping onboarding stops the k8s-only installation health-check being served.
       (lib.mkIf cfg.seed.enable {
         openreplay-seed = {
           description = "OpenReplay initial tenant/owner seed";
@@ -1160,7 +1151,7 @@ in
         };
       })
 
-      # ---- ingestion pipeline (Redis Streams) ----
+      # ingestion pipeline (Redis Streams)
       {
         openreplay-http = goWorker {
           name = "http";
@@ -1365,7 +1356,7 @@ in
           };
         };
 
-        # ---- Go "v2" API (dashboard session search etc.) ----
+        # Go "v2" API (dashboard session search etc.)
         openreplay-goapi = mkService {
           description = "OpenReplay Go v2 API";
           secretsNeeded = [
@@ -1418,7 +1409,7 @@ in
           };
         };
 
-        # ---- Python dashboard REST API (chalice; FastAPI/uvicorn) ----
+        # Python dashboard REST API (chalice; FastAPI/uvicorn)
         openreplay-chalice = mkService {
           description = "OpenReplay Python dashboard API (chalice)";
           secretsNeeded = [
@@ -1498,8 +1489,8 @@ in
           };
         };
 
-        # ---- assist: live sessions / co-browsing (Node + socket.io) ----
-        # Proxy /ws-assist/ (socket.io WebSocket upgrade, strip prefix -> /socket) and
+        # assist: live sessions / co-browsing (Node + socket.io). Proxy /ws-assist/
+        # (socket.io WebSocket upgrade, strip prefix -> /socket) and
         # /assist/ (REST). WebRTC media is peer-to-peer between agent and visitor.
         openreplay-assist = mkService {
           description = "OpenReplay assist server (live sessions / co-browsing)";
@@ -1525,8 +1516,8 @@ in
           };
         };
 
-        # ---- sourcemapreader: JS stack-trace symbolication (Node/Express) ----
-        # Called by the chalice API to map minified frames back to source via the
+        # sourcemapreader: JS stack-trace symbolication (Node/Express). Called by the
+        # chalice API to map minified frames back to source via the
         # sourcemaps bucket. Internal only — not fronted by the proxy.
         openreplay-sourcemapreader = mkService {
           description = "OpenReplay sourcemapreader (stack-trace symbolication)";
@@ -1554,8 +1545,8 @@ in
           };
         };
 
-        # ---- alerts: notification scheduler (chalice codebase, uvicorn) ----
-        # Runs app_alerts:app — an APScheduler loop, no authenticated HTTP surface;
+        # alerts: notification scheduler (chalice codebase, uvicorn). Runs
+        # app_alerts:app — an APScheduler loop, no authenticated HTTP surface;
         # shares the chalice Python env and DB config. CH_POOL=false /
         # ASSIST_KEY=ignore match upstream's alerts entrypoint.
         openreplay-alerts = mkService {
