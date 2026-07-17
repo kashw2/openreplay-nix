@@ -1,16 +1,9 @@
-# OpenReplay's dashboard SPA (Yarn Berry + Parcel, no Docker). Uses the vendored
-# Yarn (.yarn/releases/yarn-4.7.0.cjs) for the offline install, not nixpkgs'
-# yarnBerryConfigHook, whose plugin trips over this lockfile's builtin compat
-# patches (fsevents/resolve/ts); the offline cache still comes from
-# fetchYarnBerryDeps. Output is the static site nginx serves at /; the SPA calls
-# its API same-origin (location.origin + /api), so no API URL is baked in.
 {
   lib,
   stdenv,
   yarn-berry_4,
   nodejs_24,
   yarn,
-  # frontend/ lives in the pinned checkout (openreplay-src.nix) — one pin.
   openreplay-src,
 }:
 let
@@ -32,11 +25,6 @@ stdenv.mkDerivation {
   nativeBuildInputs = [ nodejs_24 ];
 
   env = {
-    # Parcel needs a large heap (matches upstream frontend/Dockerfile).
-    NODE_OPTIONS = "--max-old-space-size=10240";
-    # Hermetic install: no telemetry/global-cache/network. HOME and
-    # YARN_CACHE_FOLDER are set in configurePhase (they need runtime paths).
-    YARN_ENABLE_TELEMETRY = "false";
     YARN_ENABLE_GLOBAL_CACHE = "false";
     YARN_ENABLE_NETWORK = "false";
   };

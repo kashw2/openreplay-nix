@@ -1,12 +1,5 @@
-# OpenReplay's Go backend — all cmd/* binaries (see subPackages). Built like
-# upstream's backend/Dockerfile: CGO + the `dynamic` tag so confluent-kafka-go
-# links a system librdkafka. The OSS runtime queues through Redis Streams, not
-# Kafka, but the kafka bindings are still compiled in, so librdkafka is required
-# at build time.
 {
   buildGoModule,
-  # Pinned checkout (see openreplay-src.nix), kept whole-repo so the module can
-  # reuse this package's `src` for schema SQL; the Go module is under backend/.
   openreplay-src,
   pkg-config,
   rdkafka,

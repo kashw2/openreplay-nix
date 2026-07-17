@@ -9,8 +9,9 @@ in
 (fetchFromGitHub {
   owner = "openreplay";
   repo = "openreplay";
-  tag = "v${version}";
-  hash = "sha256-EQKA3/mSGePfhvpjqff9HwXJG2e5wpSf86fK2f3yi8s=";
+  # tag = "v${version}";
+  rev = "a83ca70ce81162c228a11d33fd28a0f0fc547221";
+  hash = "sha256-rvdNEf1FUxqnLIPIFLdNF8+IPTa6KQEMOph1k+kCZa4=";
 }).overrideAttrs
   (old: {
     passthru = (old.passthru or { }) // {

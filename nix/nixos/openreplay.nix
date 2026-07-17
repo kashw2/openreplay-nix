@@ -1,12 +1,4 @@
 { self }:
-# NixOS module for the OpenReplay session-replay services. Runs only the app
-# processes OpenReplay ships — the Go backend workers (http, sink, db, ender,
-# storage, assets, heuristics, canvases, images), integrations, spot, the "v2"
-# API, the Python dashboard API (chalice) + alerts scheduler, the assist server,
-# and the sourcemapreader — plus the one-shot schema/bucket init upstream omits.
-# It does NOT stand up Postgres, ClickHouse, Redis, an object store, or a gateway:
-# point it at existing stores via options and front it with your own nginx/caddy.
-# The dashboard SPA is exposed as `config.services.openreplay.dashboardRoot`.
 {
   config,
   lib,
@@ -16,16 +8,10 @@
 let
   cfg = config.services.openreplay;
 
-  # Path to a named binary inside the Go backend package (cmd/http -> "http").
-  orBin = name: lib.getExe' cfg.package name;
-  # The pinned checkout, via the backend package's `src` — reused for schema SQL
-  # and the Python API so the version stays pinned in one place.
-  orSrc = cfg.package.src;
-
   # Python runtime for the chalice dashboard API and alerts scheduler (both run
-  # from ${orSrc}/api against this env — not a built package). Every entry maps to
+  # from ${cfg.package.src}/api against this env — not a built package). Every entry maps to
   # a line in the source's api/requirements.txt; all are in nixpkgs, no Docker.
-  pyEnv = pkgs.python313.withPackages (
+  python3Env = pkgs.python313.withPackages (
     ps: with ps; [
       fastapi
       uvicorn
@@ -233,7 +219,7 @@ let
 
   # A Go backend worker: assemble DSNs + secrets, ensure the FS scratch dir
   # exists, then exec the binary.
-  goWorker =
+  goService =
     {
       name,
       port,
@@ -263,7 +249,8 @@ let
           ${(resolveSecrets secretsNeeded).preamble}
           ${dsnPreamble { inherit clickhouse; }}
           [ -n "''${FS_DIR:-}" ] && mkdir -p "$FS_DIR" || true
-          exec ${orBin name}
+          # Named binary inside the Go backend package (cmd/http -> "http").
+          exec ${lib.getExe' cfg.package name}
         '';
       };
     };
@@ -789,8 +776,7 @@ in
         message = "services.openreplay.seed.email must be set when seed.enable is true.";
       }
       {
-        assertion =
-          !cfg.seed.enable || (cfg.seed.password != null) != (cfg.seed.passwordFile != null);
+        assertion = !cfg.seed.enable || (cfg.seed.password != null) != (cfg.seed.passwordFile != null);
         message = "Set exactly one of services.openreplay.seed.password / passwordFile when seed.enable is true.";
       }
     ];
@@ -842,7 +828,7 @@ in
               export PGDATABASE=${cfg.postgres.database}
               psql -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm; CREATE EXTENSION IF NOT EXISTS pgcrypto;'
               if [ -z "$(psql -tAc "SELECT to_regclass('public.tenants')")" ]; then
-                psql -v ON_ERROR_STOP=1 -f ${orSrc}/scripts/schema/db/init_dbs/postgresql/init_schema.sql
+                psql -v ON_ERROR_STOP=1 -f ${cfg.package.src}/scripts/schema/db/init_dbs/postgresql/init_schema.sql
               else
                 echo "openreplay: postgres schema already present, skipping"
               fi
@@ -885,7 +871,7 @@ in
               if [ "$(clickhouse-client "''${args[@]}" --query "EXISTS DATABASE experimental")" = "1" ]; then
                 echo "openreplay: clickhouse schema already present, skipping"
               else
-                clickhouse-client "''${args[@]}" --multiquery < ${orSrc}/scripts/schema/db/init_dbs/clickhouse/create/init_schema.sql
+                clickhouse-client "''${args[@]}" --multiquery < ${cfg.package.src}/scripts/schema/db/init_dbs/clickhouse/create/init_schema.sql
               fi
             '';
           path = [ pkgs.clickhouse ];
@@ -1153,7 +1139,7 @@ in
 
       # ingestion pipeline (Redis Streams)
       {
-        openreplay-http = goWorker {
+        openreplay-http = goService {
           name = "http";
           port = cfg.ports.http;
           objectStore = true;
@@ -1174,7 +1160,7 @@ in
           };
         };
 
-        openreplay-sink = goWorker {
+        openreplay-sink = goService {
           name = "sink";
           port = cfg.ports.sink;
           secretsNeeded = [
@@ -1190,7 +1176,7 @@ in
           };
         };
 
-        openreplay-db = goWorker {
+        openreplay-db = goService {
           name = "db";
           port = cfg.ports.db;
           clickhouse = true;
@@ -1207,7 +1193,7 @@ in
           };
         };
 
-        openreplay-ender = goWorker {
+        openreplay-ender = goService {
           name = "ender";
           port = cfg.ports.ender;
           secretsNeeded = [
@@ -1221,7 +1207,7 @@ in
           };
         };
 
-        openreplay-storage = goWorker {
+        openreplay-storage = goService {
           name = "storage";
           port = cfg.ports.storage;
           objectStore = true;
@@ -1237,7 +1223,7 @@ in
           };
         };
 
-        openreplay-assets = goWorker {
+        openreplay-assets = goService {
           name = "assets";
           port = cfg.ports.assets;
           objectStore = true;
@@ -1258,7 +1244,7 @@ in
         # Derives events/issues (clicks, inputs, dead clicks, …) from the raw
         # message stream. A pure Redis-Streams consumer (no TCP listener beyond
         # its health handler), like sink/db/ender/storage.
-        openreplay-heuristics = goWorker {
+        openreplay-heuristics = goService {
           name = "heuristics";
           port = cfg.ports.heuristics;
           secretsNeeded = [ "OR_REDIS_PASSWORD" ];
@@ -1274,7 +1260,7 @@ in
         # FS_DIR/CANVAS_DIR before packing+uploading to the mobs bucket. Both topics
         # are already in `topics` and ender emits the trigger. FS_DIR is the shared
         # blobs dir (the service manages its own canvas/ subtree).
-        openreplay-canvases = goWorker {
+        openreplay-canvases = goService {
           name = "canvases";
           port = cfg.ports.canvases;
           objectStore = true;
@@ -1297,7 +1283,7 @@ in
         # the service also consumes the raw-images stream and uploads packed
         # screenshots to the mobs bucket. FS_DIR is the shared blobs dir
         # (screenshots/ subtree via SCREENSHOTS_DIR).
-        openreplay-images = goWorker {
+        openreplay-images = goService {
           name = "images";
           port = cfg.ports.images;
           objectStore = true;
@@ -1320,7 +1306,7 @@ in
         # /spots/…) — proxy /spot/ here, stripping the prefix (serves at NoPrefix).
         # Auth uses the dashboard JWT + the Spot JWT; those, the spots.* schema, and
         # the spots bucket already exist. FS_DIR is the shared blobs dir (SPOTS_DIR).
-        openreplay-spot = goWorker {
+        openreplay-spot = goService {
           name = "spot";
           port = cfg.ports.spot;
           objectStore = true;
@@ -1340,7 +1326,7 @@ in
 
         # HTTP service for third-party log integrations (Sentry, Datadog, …);
         # proxied at /integrations. Binds a TCP port; touches PG, Redis, object store.
-        openreplay-integrations = goWorker {
+        openreplay-integrations = goService {
           name = "integrations";
           port = cfg.ports.integrations;
           objectStore = true;
@@ -1404,7 +1390,7 @@ in
               }
               ${dsnPreamble { clickhouse = true; }}
               mkdir -p "$FS_DIR"
-              exec ${orBin "api"}
+              exec ${lib.getExe' cfg.package "api"}
             '';
           };
         };
@@ -1456,7 +1442,7 @@ in
           command = pkgs.writeShellApplication {
             name = "openreplay-pyapi";
             runtimeInputs = [
-              pyEnv
+              python3Env
               pkgs.coreutils
             ];
             text = ''
@@ -1481,7 +1467,7 @@ in
               # pinned source out of the store on each start.
               work="${cfg.stateDir}/api"
               rm -rf "$work" && mkdir -p "$work"
-              cp -r ${orSrc}/api/. "$work/" && chmod -R u+w "$work"
+              cp -r ${cfg.package.src}/api/. "$work/" && chmod -R u+w "$work"
               cd "$work"
               [ -f env.default ] && mv -f env.default .env
               exec uvicorn app:app --host ${cfg.listenAddress} --port ${toString cfg.ports.dashboardApi} --proxy-headers --log-level warning
@@ -1586,7 +1572,7 @@ in
           command = pkgs.writeShellApplication {
             name = "openreplay-alerts-run";
             runtimeInputs = [
-              pyEnv
+              python3Env
               pkgs.coreutils
             ];
             text = ''
@@ -1610,7 +1596,7 @@ in
               # entrypoint runs app_alerts:app rather than chalice's app:app.
               work="${cfg.stateDir}/alerts"
               rm -rf "$work" && mkdir -p "$work"
-              cp -r ${orSrc}/api/. "$work/" && chmod -R u+w "$work"
+              cp -r ${cfg.package.src}/api/. "$work/" && chmod -R u+w "$work"
               cd "$work"
               [ -f env.default ] && mv -f env.default .env
               exec uvicorn app_alerts:app --host ${cfg.listenAddress} --port ${toString cfg.ports.alerts} --log-level warning
