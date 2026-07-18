@@ -4,6 +4,7 @@
 # Packaged from the pinned checkout to track the server version. Plain Node CLI, no
 # build step.
 {
+  lib,
   buildNpmPackage,
   openreplay-src,
 }:
@@ -28,5 +29,11 @@ buildNpmPackage {
     ln -s "@openreplay/sourcemap-uploader" "$out/bin/openreplay-sourcemap-uploader"
   '';
 
-  meta.mainProgram = "openreplay-sourcemap-uploader";
+  meta = {
+    description = "OpenReplay sourcemap-uploader — CLI that pushes JS sourcemaps to an OpenReplay instance";
+    homepage = "https://github.com/openreplay/openreplay";
+    license = lib.licenses.mit;
+    mainProgram = "openreplay-sourcemap-uploader";
+    platforms = lib.platforms.linux;
+  };
 }

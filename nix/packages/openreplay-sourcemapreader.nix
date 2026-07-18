@@ -43,5 +43,11 @@ buildNpmPackage {
       --set MAPPING_WASM "$wasm"
   '';
 
-  meta.mainProgram = "openreplay-sourcemapreader";
+  meta = {
+    description = "OpenReplay sourcemapreader — symbolicates JS stack traces from uploaded sourcemaps";
+    homepage = "https://github.com/openreplay/openreplay";
+    license = lib.licenses.mit;
+    mainProgram = "openreplay-sourcemapreader";
+    platforms = lib.platforms.linux;
+  };
 }

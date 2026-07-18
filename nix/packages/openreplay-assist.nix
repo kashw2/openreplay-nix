@@ -26,5 +26,11 @@ buildNpmPackage {
       --add-flags $out/lib/node_modules/assist-server/server.js
   '';
 
-  meta.mainProgram = "openreplay-assist";
+  meta = {
+    description = "OpenReplay assist — Node.js socket.io signalling server for live sessions and co-browsing";
+    homepage = "https://github.com/openreplay/openreplay";
+    license = lib.licenses.mit;
+    mainProgram = "openreplay-assist";
+    platforms = lib.platforms.linux;
+  };
 }
