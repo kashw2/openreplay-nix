@@ -8,12 +8,13 @@
 # sourcemapreader/, so we reproduce the copy from the pinned checkout.
 {
   lib,
+  runCommand,
   buildNpmPackage,
   nodejs_24,
   makeWrapper,
   openreplay-src,
 }:
-buildNpmPackage {
+buildNpmPackage (finalAttrs: {
   pname = "openreplay-sourcemapreader";
   inherit (openreplay-src) version;
 
@@ -43,5 +44,19 @@ buildNpmPackage {
       --set MAPPING_WASM "$wasm"
   '';
 
+  # Smoke test: the server starts and initialises source-map's mappings.wasm
+  # (the bit the custom postInstall wires up), then we stop it.
+  passthru.tests.smoke = runCommand "openreplay-sourcemapreader-smoke" { } ''
+    "${lib.getExe finalAttrs.finalPackage}" > log 2>&1 &
+    pid=$!
+    for _ in $(seq 1 60); do
+      grep -q "SR App listening" log && break
+      sleep 1
+    done
+    kill "$pid" 2>/dev/null || true
+    grep -q "SR App listening" log
+    touch $out
+  '';
+
   meta.mainProgram = "openreplay-sourcemapreader";
-}
+})
