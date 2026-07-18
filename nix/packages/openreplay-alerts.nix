@@ -4,6 +4,7 @@
 # against a bundled Python env, copied to a writable workdir on each start.
 # Extra args are forwarded to uvicorn; runtime config comes from the environment.
 {
+  lib,
   writeShellApplication,
   coreutils,
   openreplay-src,
@@ -23,4 +24,11 @@ writeShellApplication {
     [ -f env.default ] && mv -f env.default .env
     exec uvicorn app_alerts:app "$@"
   '';
+
+  meta = {
+    description = "OpenReplay alerts scheduler — APScheduler loop over the chalice codebase";
+    homepage = "https://github.com/openreplay/openreplay";
+    license = lib.licenses.mit;
+    platforms = lib.platforms.linux;
+  };
 }

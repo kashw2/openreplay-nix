@@ -1,4 +1,5 @@
 {
+  lib,
   buildGoModule,
   openreplay-src,
   pkg-config,
@@ -45,4 +46,11 @@ buildGoModule {
     lz4
     openssl
   ];
+
+  meta = {
+    description = "OpenReplay backend services (Go) — ingestion, workers, storage, and the v2 API";
+    homepage = "https://github.com/openreplay/openreplay";
+    license = lib.licenses.mit;
+    platforms = lib.platforms.linux;
+  };
 }
