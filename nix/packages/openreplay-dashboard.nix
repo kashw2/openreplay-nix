@@ -61,4 +61,11 @@ stdenv.mkDerivation {
     cp -r public $out
     runHook postInstall
   '';
+
+  meta = {
+    description = "OpenReplay dashboard single-page app (static site)";
+    homepage = "https://github.com/openreplay/openreplay";
+    license = lib.licenses.agpl3Only;
+    platforms = lib.platforms.linux;
+  };
 }

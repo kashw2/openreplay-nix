@@ -26,5 +26,11 @@ buildNpmPackage {
       --add-flags $out/lib/node_modules/assist-server/server.js
   '';
 
-  meta.mainProgram = "openreplay-assist";
+  meta = {
+    description = "OpenReplay assist server (live sessions / co-browsing signalling)";
+    homepage = "https://github.com/openreplay/openreplay";
+    license = lib.licenses.agpl3Only;
+    mainProgram = "openreplay-assist";
+    platforms = lib.platforms.linux;
+  };
 }

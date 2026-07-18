@@ -52,7 +52,7 @@ stdenv.mkDerivation {
   meta = {
     description = "OpenReplay session-replay player (source + deps) — build input for the MCP app UI";
     homepage = "https://github.com/openreplay/openreplay";
-    license = lib.licenses.mit;
+    license = lib.licenses.agpl3Only;
     platforms = lib.platforms.linux;
   };
 }
