@@ -4,10 +4,12 @@
 # Packaged from the pinned checkout to track the server version. Plain Node CLI, no
 # build step.
 {
+  lib,
+  runCommand,
   buildNpmPackage,
   openreplay-src,
 }:
-buildNpmPackage {
+buildNpmPackage (finalAttrs: {
   pname = "openreplay-sourcemap-uploader";
   inherit (openreplay-src) version;
 
@@ -28,5 +30,11 @@ buildNpmPackage {
     ln -s "@openreplay/sourcemap-uploader" "$out/bin/openreplay-sourcemap-uploader"
   '';
 
+  # Smoke test: the CLI's --help must load and exit cleanly.
+  passthru.tests.smoke = runCommand "openreplay-sourcemap-uploader-smoke" { } ''
+    ${lib.getExe finalAttrs.finalPackage} --help > /dev/null
+    touch $out
+  '';
+
   meta.mainProgram = "openreplay-sourcemap-uploader";
-}
+})
