@@ -5,23 +5,36 @@
 # --host/--port/flags; runtime config is read from the process environment
 # (python-decouple).
 {
+  lib,
+  runCommand,
   writeShellApplication,
   coreutils,
   openreplay-src,
   pythonEnv,
 }:
-writeShellApplication {
-  name = "openreplay-chalice";
-  runtimeInputs = [
-    pythonEnv
-    coreutils
-  ];
-  text = ''
-    work="''${TMPDIR:-/tmp}/openreplay-chalice-work"
-    rm -rf "$work" && mkdir -p "$work" && chmod 700 "$work"
-    cp -r ${openreplay-src}/api/. "$work/" && chmod -R u+w "$work"
-    cd "$work"
-    [ -f env.default ] && mv -f env.default .env
-    exec uvicorn app:app "$@"
-  '';
-}
+let
+  pkg = writeShellApplication {
+    name = "openreplay-chalice";
+    runtimeInputs = [
+      pythonEnv
+      coreutils
+    ];
+    text = ''
+      work="''${TMPDIR:-/tmp}/openreplay-chalice-work"
+      rm -rf "$work" && mkdir -p "$work" && chmod 700 "$work"
+      cp -r ${openreplay-src}/api/. "$work/" && chmod -R u+w "$work"
+      cd "$work"
+      [ -f env.default ] && mv -f env.default .env
+      exec uvicorn app:app "$@"
+    '';
+  };
+in
+pkg.overrideAttrs (old: {
+  passthru = (old.passthru or { }) // {
+    # Smoke test: the wrapped uvicorn launches from the Python env and prints help.
+    tests.smoke = runCommand "openreplay-chalice-smoke" { } ''
+      ${lib.getExe pkg} --help > /dev/null
+      touch $out
+    '';
+  };
+})
