@@ -5,6 +5,7 @@
 # --host/--port/flags; runtime config is read from the process environment
 # (python-decouple).
 {
+  lib,
   writeShellApplication,
   coreutils,
   openreplay-src,
@@ -24,4 +25,12 @@ writeShellApplication {
     [ -f env.default ] && mv -f env.default .env
     exec uvicorn app:app "$@"
   '';
+
+  meta = {
+    description = "OpenReplay dashboard REST API (chalice/FastAPI on uvicorn)";
+    homepage = "https://github.com/openreplay/openreplay";
+    license = lib.licenses.agpl3Only;
+    mainProgram = "openreplay-chalice";
+    platforms = lib.platforms.linux;
+  };
 }
