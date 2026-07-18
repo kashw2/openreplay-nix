@@ -122,6 +122,7 @@
         # so it needs <nixpkgs> on NIX_PATH (CI gets this from install-nix-action).
         NIX_PATH = "nixpkgs=flake:nixpkgs";
       };
+      formatter.${system} = pkgs.nixfmt;
       nixosModules = rec {
         openreplay = import ./nix/nixos/openreplay.nix { inherit self; };
         default = openreplay;
