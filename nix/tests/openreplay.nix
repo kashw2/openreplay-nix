@@ -33,26 +33,28 @@ pkgs.testers.runNixOSTest {
 
       systemd.services.seaweedfs =
         let
-          s3Config = pkgs.writeText "seaweedfs-s3.json" (builtins.toJSON {
-            identities = [
-              {
-                name = "openreplay";
-                credentials = [
-                  {
-                    accessKey = "minioadmin";
-                    secretKey = "minioadminpassword";
-                  }
-                ];
-                actions = [
-                  "Admin"
-                  "Read"
-                  "Write"
-                  "List"
-                  "Tagging"
-                ];
-              }
-            ];
-          });
+          s3Config = pkgs.writeText "seaweedfs-s3.json" (
+            builtins.toJSON {
+              identities = [
+                {
+                  name = "openreplay";
+                  credentials = [
+                    {
+                      accessKey = "minioadmin";
+                      secretKey = "minioadminpassword";
+                    }
+                  ];
+                  actions = [
+                    "Admin"
+                    "Read"
+                    "Write"
+                    "List"
+                    "Tagging"
+                  ];
+                }
+              ];
+            }
+          );
         in
         {
           description = "SeaweedFS S3-compatible object store";
