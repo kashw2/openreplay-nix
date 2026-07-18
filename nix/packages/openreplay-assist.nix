@@ -3,12 +3,13 @@
 # build step — install deps and wrap `node server.js`.
 {
   lib,
+  runCommand,
   buildNpmPackage,
   nodejs_24,
   makeWrapper,
   openreplay-src,
 }:
-buildNpmPackage {
+buildNpmPackage (finalAttrs: {
   pname = "openreplay-assist";
   inherit (openreplay-src) version;
 
@@ -26,5 +27,13 @@ buildNpmPackage {
       --add-flags $out/lib/node_modules/assist-server/server.js
   '';
 
+  # Smoke test: the wrapper and its wrapped entrypoint are installed. (The server
+  # refuses to start without ASSIST_KEY/MAXMINDDB_FILE, so we don't launch it.)
+  passthru.tests.smoke = runCommand "openreplay-assist-smoke" { } ''
+    test -x ${finalAttrs.finalPackage}/bin/openreplay-assist
+    test -f ${finalAttrs.finalPackage}/lib/node_modules/assist-server/server.js
+    touch $out
+  '';
+
   meta.mainProgram = "openreplay-assist";
-}
+})
