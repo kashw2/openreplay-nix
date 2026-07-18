@@ -15,9 +15,14 @@ jobs:
       fail-fast: false
       matrix:
         package:
-          - openreplay-backend
-          - openreplay-dashboard
+          - openreplay-alerts
           - openreplay-assist
+          - openreplay-backend
+          - openreplay-chalice
+          - openreplay-dashboard
+          - openreplay-sourcemap-uploader
+          - openreplay-sourcemapreader
+          - openreplay-src
     steps:
       - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31.10.6
