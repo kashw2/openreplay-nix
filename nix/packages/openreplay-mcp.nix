@@ -81,7 +81,7 @@ stdenv.mkDerivation {
       "OpenReplay MCP server — browse sessions, charts, and replays from an MCP host"
       + lib.optionalString (withPlayer != null) " (with interactive UI)";
     homepage = "https://docs.openreplay.com/en/mcp/";
-    license = lib.licenses.mit;
+    license = [ lib.licenses.mit ] ++ lib.optional (withPlayer != null) lib.licenses.agpl3Only;
     mainProgram = "openreplay-mcp";
     platforms = lib.platforms.linux;
   };
