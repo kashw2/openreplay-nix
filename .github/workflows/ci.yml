@@ -8,6 +8,15 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31.10.6
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - run: nix build --print-build-logs ".#checks.x86_64-linux.formatting"
   build:
     name: build ${{ matrix.package }}
     runs-on: ubuntu-latest

@@ -113,6 +113,12 @@
         openreplay-module = import ./nix/tests/openreplay.nix {
           inherit self pkgs;
         };
+        # Fails the flake check if any tracked .nix file isn't nixfmt-clean.
+        formatting = pkgs.runCommand "check-formatting" { nativeBuildInputs = [ pkgs.nixfmt ]; } ''
+          cd ${self}
+          find . -name '*.nix' -print0 | xargs -0 nixfmt --check
+          touch $out
+        '';
       };
     };
 }
