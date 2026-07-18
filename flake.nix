@@ -94,6 +94,17 @@
             ;
           default = openreplay;
         };
+      # `nix run .#openreplay-mcp` / `.#openreplay-sourcemap-uploader` for the CLIs.
+      apps.${system} = {
+        openreplay-mcp = {
+          type = "app";
+          program = pkgs.lib.getExe self.packages.${system}.openreplay-mcp;
+        };
+        openreplay-sourcemap-uploader = {
+          type = "app";
+          program = pkgs.lib.getExe self.packages.${system}.openreplay-sourcemap-uploader;
+        };
+      };
       # `nix-update` for the update workflow (see .github/workflows/update.yml),
       # entered with `nix develop`.
       devShells.${system}.default = pkgs.mkShell {
