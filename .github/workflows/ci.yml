@@ -20,6 +20,8 @@ jobs:
           - openreplay-backend
           - openreplay-chalice
           - openreplay-dashboard
+          - openreplay-mcp
+          - openreplay-player
           - openreplay-sourcemap-uploader
           - openreplay-sourcemapreader
           - openreplay-src
