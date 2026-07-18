@@ -30,6 +30,36 @@
           openreplay-sourcemap-uploader = pkgs.callPackage ./nix/packages/openreplay-sourcemap-uploader.nix {
             inherit openreplay-src;
           };
+          # The chalice dashboard API + alerts scheduler run from ${openreplay-src}/api against this interpreter
+          # (uvicorn + the deps from api/requirements.txt) and therefore requires python packages in it's environment
+          pythonEnv = pkgs.python313.withPackages (
+            ps: with ps; [
+              fastapi
+              uvicorn
+              psycopg
+              psycopg-pool
+              psycopg2
+              clickhouse-connect
+              boto3
+              pyjwt
+              python-decouple
+              pydantic
+              email-validator
+              apscheduler
+              redis
+              elasticsearch
+              jira
+              cachetools
+              requests
+              urllib3
+            ]
+          );
+          openreplay-chalice = pkgs.callPackage ./nix/packages/openreplay-chalice.nix {
+            inherit openreplay-src pythonEnv;
+          };
+          openreplay-alerts = pkgs.callPackage ./nix/packages/openreplay-alerts.nix {
+            inherit openreplay-src pythonEnv;
+          };
           openreplay = pkgs.symlinkJoin {
             name = "openreplay";
             paths = [
@@ -43,6 +73,8 @@
         {
           inherit
             openreplay-src
+            openreplay-chalice
+            openreplay-alerts
             openreplay-backend
             openreplay-dashboard
             openreplay-assist

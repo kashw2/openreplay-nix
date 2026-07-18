@@ -29,8 +29,11 @@ stdenv.mkDerivation {
     YARN_ENABLE_NETWORK = "false";
   };
 
-  # Player CSS-rewrite fix — see the patch header for the full rationale.
-  patches = [ ./openreplay-dashboard-player-css.patch ];
+  # Frontend source fixes — see each patch header for the full rationale.
+  patches = [
+    ./openreplay-dashboard-player-css.patch
+    ./openreplay-dashboard-assist-confirm.patch
+  ];
 
   configurePhase = ''
     runHook preConfigure

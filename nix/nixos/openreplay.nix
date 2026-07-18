@@ -8,32 +8,6 @@
 let
   cfg = config.services.openreplay;
 
-  # Python runtime for the chalice dashboard API and alerts scheduler (both run
-  # from ${cfg.package.src}/api against this env — not a built package). Every entry maps to
-  # a line in the source's api/requirements.txt; all are in nixpkgs, no Docker.
-  python3Env = pkgs.python313.withPackages (
-    ps: with ps; [
-      fastapi
-      uvicorn
-      psycopg # psycopg[binary]
-      psycopg-pool # psycopg[pool]
-      psycopg2 # psycopg2-binary
-      clickhouse-connect
-      boto3
-      pyjwt
-      python-decouple
-      pydantic
-      email-validator # pydantic[email]
-      apscheduler
-      redis
-      elasticsearch
-      jira
-      cachetools
-      requests
-      urllib3
-    ]
-  );
-
   # ClickHouse's Go/Python clients scan the tz database at startup; NixOS has no
   # /usr/share/zoneinfo, so without TZDIR pointed at nixpkgs tzdata they fail
   # with "Could not determine local time zone".
@@ -282,6 +256,18 @@ in
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-sourcemapreader;
       defaultText = lib.literalExpression "openreplay-nix.packages.\${system}.openreplay-sourcemapreader";
       description = "The sourcemapreader server package (JS stack-trace symbolication).";
+    };
+    chalicePackage = lib.mkOption {
+      type = lib.types.package;
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-chalice;
+      defaultText = lib.literalExpression "openreplay-nix.packages.\${system}.openreplay-chalice";
+      description = "The chalice dashboard REST API package (uvicorn app:app).";
+    };
+    alertsPackage = lib.mkOption {
+      type = lib.types.package;
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-alerts;
+      defaultText = lib.literalExpression "openreplay-nix.packages.\${system}.openreplay-alerts";
+      description = "The alerts scheduler package (uvicorn app_alerts:app).";
     };
     dashboardRoot = lib.mkOption {
       type = lib.types.path;
@@ -1441,10 +1427,7 @@ in
           };
           command = pkgs.writeShellApplication {
             name = "openreplay-pyapi";
-            runtimeInputs = [
-              python3Env
-              pkgs.coreutils
-            ];
+            runtimeInputs = [ pkgs.coreutils ];
             text = ''
               ${(resolveSecrets [
                 "OR_PG_PASSWORD"
@@ -1463,14 +1446,7 @@ in
               export ch_password="''${OR_CH_PASSWORD:-}"
               export S3_SECRET="''${AWS_SECRET_ACCESS_KEY:-}"
               ${dsnPreamble { }}
-              # uvicorn needs a writable workdir with the app + .env; copy the
-              # pinned source out of the store on each start.
-              work="${cfg.stateDir}/api"
-              rm -rf "$work" && mkdir -p "$work"
-              cp -r ${cfg.package.src}/api/. "$work/" && chmod -R u+w "$work"
-              cd "$work"
-              [ -f env.default ] && mv -f env.default .env
-              exec uvicorn app:app --host ${cfg.listenAddress} --port ${toString cfg.ports.dashboardApi} --proxy-headers --log-level warning
+              exec ${lib.getExe cfg.chalicePackage} --host ${cfg.listenAddress} --port ${toString cfg.ports.dashboardApi} --proxy-headers --log-level warning
             '';
           };
         };
@@ -1571,10 +1547,7 @@ in
           };
           command = pkgs.writeShellApplication {
             name = "openreplay-alerts-run";
-            runtimeInputs = [
-              python3Env
-              pkgs.coreutils
-            ];
+            runtimeInputs = [ pkgs.coreutils ];
             text = ''
               ${(resolveSecrets [
                 "OR_PG_PASSWORD"
@@ -1592,14 +1565,7 @@ in
               export ch_password="''${OR_CH_PASSWORD:-}"
               export S3_SECRET="''${AWS_SECRET_ACCESS_KEY:-}"
               ${dsnPreamble { }}
-              # uvicorn needs a writable working copy of the app; the alerts
-              # entrypoint runs app_alerts:app rather than chalice's app:app.
-              work="${cfg.stateDir}/alerts"
-              rm -rf "$work" && mkdir -p "$work"
-              cp -r ${cfg.package.src}/api/. "$work/" && chmod -R u+w "$work"
-              cd "$work"
-              [ -f env.default ] && mv -f env.default .env
-              exec uvicorn app_alerts:app --host ${cfg.listenAddress} --port ${toString cfg.ports.alerts} --log-level warning
+              exec ${lib.getExe cfg.alertsPackage} --host ${cfg.listenAddress} --port ${toString cfg.ports.alerts} --log-level warning
             '';
           };
         };
