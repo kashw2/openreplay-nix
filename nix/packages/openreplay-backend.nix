@@ -1,4 +1,6 @@
 {
+  lib,
+  runCommand,
   buildGoModule,
   openreplay-src,
   pkg-config,
@@ -9,7 +11,7 @@
   lz4,
   openssl,
 }:
-buildGoModule {
+buildGoModule (finalAttrs: {
   pname = "openreplay-backend";
   inherit (openreplay-src) version;
 
@@ -45,4 +47,15 @@ buildGoModule {
     lz4
     openssl
   ];
-}
+
+  # Smoke test: every declared subPackage produced its binary.
+  passthru.tests.smoke = runCommand "openreplay-backend-smoke" { } ''
+    for b in api assets canvases db ender heuristics http images integrations sink spot storage; do
+      test -x "${finalAttrs.finalPackage}/bin/$b" || {
+        echo "missing backend binary: $b" >&2
+        exit 1
+      }
+    done
+    touch $out
+  '';
+})
