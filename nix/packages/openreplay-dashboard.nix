@@ -61,4 +61,11 @@ stdenv.mkDerivation {
     cp -r public $out
     runHook postInstall
   '';
+
+  meta = {
+    description = "OpenReplay dashboard — the frontend web UI (static build output)";
+    homepage = "https://github.com/openreplay/openreplay";
+    license = lib.licenses.mit;
+    platforms = lib.platforms.linux;
+  };
 }
