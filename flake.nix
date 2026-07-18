@@ -76,6 +76,12 @@
               openreplay-assist
               openreplay-sourcemapreader
             ];
+            meta = {
+              description = "OpenReplay stack — backend, dashboard, assist, and sourcemapreader combined";
+              homepage = "https://github.com/openreplay/openreplay";
+              license = pkgs.lib.licenses.mit;
+              platforms = pkgs.lib.platforms.linux;
+            };
           };
         in
         {
