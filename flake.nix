@@ -63,6 +63,11 @@
           openreplay-player = pkgs.callPackage ./nix/packages/openreplay-player.nix {
             inherit openreplay-src;
           };
+          # Server only; for the interactive UI, override with the player:
+          #   openreplay-mcp.override { withPlayer = openreplay-player; }
+          openreplay-mcp = pkgs.callPackage ./nix/packages/openreplay-mcp.nix {
+            inherit openreplay-src;
+          };
           openreplay = pkgs.symlinkJoin {
             name = "openreplay";
             paths = [
@@ -79,6 +84,7 @@
             openreplay-chalice
             openreplay-alerts
             openreplay-player
+            openreplay-mcp
             openreplay-backend
             openreplay-dashboard
             openreplay-assist
