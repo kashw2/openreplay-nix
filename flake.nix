@@ -60,6 +60,9 @@
           openreplay-alerts = pkgs.callPackage ./nix/packages/openreplay-alerts.nix {
             inherit openreplay-src pythonEnv;
           };
+          openreplay-player = pkgs.callPackage ./nix/packages/openreplay-player.nix {
+            inherit openreplay-src;
+          };
           openreplay = pkgs.symlinkJoin {
             name = "openreplay";
             paths = [
@@ -75,6 +78,7 @@
             openreplay-src
             openreplay-chalice
             openreplay-alerts
+            openreplay-player
             openreplay-backend
             openreplay-dashboard
             openreplay-assist

@@ -50,7 +50,8 @@ src.overrideAttrs (old: {
           openreplay-assist \
           openreplay-sourcemapreader \
           openreplay-sourcemap-uploader \
-          openreplay-dashboard; do
+          openreplay-dashboard \
+          openreplay-player; do
           echo "refreshing dependency hashes for $pkg" >&2
           nix-update --flake --version=skip "$pkg"
         done
