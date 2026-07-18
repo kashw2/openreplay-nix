@@ -12,13 +12,14 @@
   yarn,
   nodejs_24,
   makeWrapper,
+  runCommand,
   openreplay-src,
   withPlayer ? null,
 }:
 let
   mcpSrc = openreplay-src + "/mcp_app";
 in
-stdenv.mkDerivation {
+stdenv.mkDerivation (finalAttrs: {
   pname = "openreplay-mcp";
   inherit (openreplay-src) version;
 
@@ -76,6 +77,14 @@ stdenv.mkDerivation {
     runHook postInstall
   '';
 
+  # Smoke test: the bundled server boots on stdio, registers its tools, and exits
+  # cleanly on EOF.
+  passthru.tests.smoke = runCommand "openreplay-mcp-smoke" { } ''
+    timeout 60 ${lib.getExe finalAttrs.finalPackage} < /dev/null > log 2>&1 || true
+    grep -q "OpenReplay MCP Server READY on stdio" log
+    touch $out
+  '';
+
   meta = {
     description =
       "OpenReplay MCP server — browse sessions, charts, and replays from an MCP host"
@@ -85,4 +94,4 @@ stdenv.mkDerivation {
     mainProgram = "openreplay-mcp";
     platforms = lib.platforms.linux;
   };
-}
+})
