@@ -197,6 +197,7 @@ let
     {
       name,
       port,
+      metricsPort,
       environment ? { },
       secretsNeeded ? [ ],
       clickhouse ? false,
@@ -209,6 +210,7 @@ let
         SERVICE_NAME = name;
         HTTP_HOST = cfg.listenAddress;
         HTTP_PORT = toString port;
+        METRICS_PORT = toString metricsPort;
         LOG_QUEUE_STATS_INTERVAL_SEC = "60";
         REDIS_STREAMS_MAX_LEN = "10000";
         HOSTNAME = "openreplay-${name}";
@@ -274,6 +276,16 @@ in
       type = lib.types.str;
       default = "127.0.0.1";
       description = "Address the service HTTP endpoints bind to (front with your own proxy).";
+    };
+    healthHost = lib.mkOption {
+      type = lib.types.str;
+      default = cfg.listenAddress;
+      description = ''
+        Host the dashboard API's onboarding health-check probes each backend on
+        (HEALTH_HOST). Defaults to the listen address; the services expose their
+        /health on this host at their own `metricsPort`, so no Kubernetes DNS is
+        needed on a single-host deploy.
+      '';
     };
     siteUrl = lib.mkOption {
       type = lib.types.str;
@@ -403,12 +415,22 @@ in
         default = 8100;
         description = "Ingest (http) service port.";
       };
+      metricsPort = lib.mkOption {
+        type = lib.types.port;
+        default = 8120;
+        description = "http service /metrics + /health port.";
+      };
     };
     sink = {
       port = lib.mkOption {
         type = lib.types.port;
         default = 8101;
         description = "sink service health port.";
+      };
+      metricsPort = lib.mkOption {
+        type = lib.types.port;
+        default = 8121;
+        description = "sink service /metrics + /health port.";
       };
     };
     db = {
@@ -417,12 +439,22 @@ in
         default = 8102;
         description = "db service health port.";
       };
+      metricsPort = lib.mkOption {
+        type = lib.types.port;
+        default = 8122;
+        description = "db service /metrics + /health port.";
+      };
     };
     ender = {
       port = lib.mkOption {
         type = lib.types.port;
         default = 8103;
         description = "ender service health port.";
+      };
+      metricsPort = lib.mkOption {
+        type = lib.types.port;
+        default = 8132;
+        description = "ender service /metrics + /health port.";
       };
     };
     storage = {
@@ -431,12 +463,22 @@ in
         default = 8104;
         description = "storage service health port.";
       };
+      metricsPort = lib.mkOption {
+        type = lib.types.port;
+        default = 8124;
+        description = "storage service /metrics + /health port.";
+      };
     };
     assets = {
       port = lib.mkOption {
         type = lib.types.port;
         default = 8105;
         description = "assets service port.";
+      };
+      metricsPort = lib.mkOption {
+        type = lib.types.port;
+        default = 8125;
+        description = "assets service /metrics + /health port.";
       };
     };
     heuristics = {
@@ -445,12 +487,22 @@ in
         default = 8109;
         description = "heuristics service health port.";
       };
+      metricsPort = lib.mkOption {
+        type = lib.types.port;
+        default = 8126;
+        description = "heuristics service /metrics + /health port.";
+      };
     };
     integrations = {
       port = lib.mkOption {
         type = lib.types.port;
         default = 8110;
         description = "integrations service HTTP port (proxy /integrations here).";
+      };
+      metricsPort = lib.mkOption {
+        type = lib.types.port;
+        default = 8127;
+        description = "integrations service /metrics + /health port.";
       };
     };
     canvases = {
@@ -459,6 +511,11 @@ in
         default = 8114;
         description = "canvases service port (web canvas uploads at /v1/web/images).";
       };
+      metricsPort = lib.mkOption {
+        type = lib.types.port;
+        default = 8128;
+        description = "canvases service /metrics + /health port.";
+      };
     };
     images = {
       port = lib.mkOption {
@@ -466,12 +523,22 @@ in
         default = 8115;
         description = "images service port (mobile screenshot uploads at /v1/mobile/images).";
       };
+      metricsPort = lib.mkOption {
+        type = lib.types.port;
+        default = 8129;
+        description = "images service /metrics + /health port.";
+      };
     };
     spot = {
       port = lib.mkOption {
         type = lib.types.port;
         default = 8116;
         description = "spot service port (Spot recorder REST API; proxy /spot here).";
+      };
+      metricsPort = lib.mkOption {
+        type = lib.types.port;
+        default = 8130;
+        description = "spot service /metrics + /health port.";
       };
     };
 
@@ -482,6 +549,11 @@ in
         type = lib.types.port;
         default = 8106;
         description = "Go \"v2\" API port (session search, served at /v2/api).";
+      };
+      metricsPort = lib.mkOption {
+        type = lib.types.port;
+        default = 8131;
+        description = "api service /metrics + /health port.";
       };
     };
 
@@ -1162,6 +1234,7 @@ in
         openreplay-http = goService {
           name = "http";
           port = cfg.http.port;
+          metricsPort = cfg.http.metricsPort;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1183,6 +1256,7 @@ in
         openreplay-sink = goService {
           name = "sink";
           port = cfg.sink.port;
+          metricsPort = cfg.sink.metricsPort;
           secretsNeeded = [
             "OR_PG_PASSWORD"
             "OR_REDIS_PASSWORD"
@@ -1199,6 +1273,7 @@ in
         openreplay-db = goService {
           name = "db";
           port = cfg.db.port;
+          metricsPort = cfg.db.metricsPort;
           clickhouse = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1216,6 +1291,7 @@ in
         openreplay-ender = goService {
           name = "ender";
           port = cfg.ender.port;
+          metricsPort = cfg.ender.metricsPort;
           secretsNeeded = [
             "OR_PG_PASSWORD"
             "OR_REDIS_PASSWORD"
@@ -1230,6 +1306,7 @@ in
         openreplay-storage = goService {
           name = "storage";
           port = cfg.storage.port;
+          metricsPort = cfg.storage.metricsPort;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1246,6 +1323,7 @@ in
         openreplay-assets = goService {
           name = "assets";
           port = cfg.assets.port;
+          metricsPort = cfg.assets.metricsPort;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1267,6 +1345,7 @@ in
         openreplay-heuristics = goService {
           name = "heuristics";
           port = cfg.heuristics.port;
+          metricsPort = cfg.heuristics.metricsPort;
           secretsNeeded = [ "OR_REDIS_PASSWORD" ];
           environment = {
             GROUP_HEURISTICS = "heuristics";
@@ -1283,6 +1362,7 @@ in
         openreplay-canvases = goService {
           name = "canvases";
           port = cfg.canvases.port;
+          metricsPort = cfg.canvases.metricsPort;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1306,6 +1386,7 @@ in
         openreplay-images = goService {
           name = "images";
           port = cfg.images.port;
+          metricsPort = cfg.images.metricsPort;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1329,6 +1410,7 @@ in
         openreplay-spot = goService {
           name = "spot";
           port = cfg.spot.port;
+          metricsPort = cfg.spot.metricsPort;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1349,6 +1431,7 @@ in
         openreplay-integrations = goService {
           name = "integrations";
           port = cfg.integrations.port;
+          metricsPort = cfg.integrations.metricsPort;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1383,6 +1466,7 @@ in
               REDIS_STREAMS_MAX_LEN = "10000";
               HTTP_HOST = cfg.listenAddress;
               HTTP_PORT = toString cfg.api.port;
+              METRICS_PORT = toString cfg.api.metricsPort;
               JWT_ISSUER = "OpenReplay-oss";
               BUCKET_NAME = "mobs";
               # Presigns the replay DOM ("mob") URLs the player fetches from the
@@ -1452,6 +1536,7 @@ in
             sessions_region = cfg.s3.region;
             SITE_URL = cfg.siteUrl;
             LISTEN_PORT = toString cfg.chalice.port;
+            HEALTH_HOST = cfg.healthHost;
             ASSIST_URL = assistUrlEnv;
             ASSIST_KEY = cfg.assistKey;
             # Symbolication: chalice formats this with SMR_KEY (default "smr") ->
