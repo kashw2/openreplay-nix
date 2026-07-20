@@ -236,21 +236,18 @@ in
     package = lib.mkOption {
       type = lib.types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-backend;
-      defaultText = lib.literalExpression "openreplay-nix.packages.\${system}.openreplay-backend";
       description = "The Go backend package (also provides the pinned source via `.src`).";
     };
     dashboard = {
       package = lib.mkOption {
         type = lib.types.package;
         default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-dashboard;
-        defaultText = lib.literalExpression "openreplay-nix.packages.\${system}.openreplay-dashboard";
         description = "The built dashboard SPA (static site).";
       };
       root = lib.mkOption {
         type = lib.types.path;
         readOnly = true;
         default = cfg.dashboard.package;
-        defaultText = lib.literalExpression "config.services.openreplay.dashboard.package";
         description = ''
           The static dashboard SPA root. Point your reverse proxy's document root
           at this; this module does not serve it.
@@ -286,7 +283,6 @@ in
     assetsOrigin = lib.mkOption {
       type = lib.types.str;
       default = cfg.siteUrl;
-      defaultText = lib.literalExpression "config.services.openreplay.siteUrl";
       description = "Origin recorded assets are served from (ASSETS_ORIGIN).";
     };
     assistKey = lib.mkOption {
@@ -499,7 +495,6 @@ in
       package = lib.mkOption {
         type = lib.types.package;
         default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-chalice;
-        defaultText = lib.literalExpression "openreplay-nix.packages.\${system}.openreplay-chalice";
         description = "The chalice dashboard REST API package (uvicorn app:app).";
       };
     };
@@ -519,7 +514,6 @@ in
       package = lib.mkOption {
         type = lib.types.package;
         default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-assist;
-        defaultText = lib.literalExpression "openreplay-nix.packages.\${system}.openreplay-assist";
         description = "The assist server package (live sessions / co-browsing).";
       };
     };
@@ -539,7 +533,6 @@ in
       package = lib.mkOption {
         type = lib.types.package;
         default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-sourcemapreader;
-        defaultText = lib.literalExpression "openreplay-nix.packages.\${system}.openreplay-sourcemapreader";
         description = "The sourcemapreader server package (JS stack-trace symbolication).";
       };
     };
@@ -554,7 +547,6 @@ in
       package = lib.mkOption {
         type = lib.types.package;
         default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-alerts;
-        defaultText = lib.literalExpression "openreplay-nix.packages.\${system}.openreplay-alerts";
         description = "The alerts scheduler package (uvicorn app_alerts:app).";
       };
     };
@@ -671,7 +663,6 @@ in
       publicEndpoint = lib.mkOption {
         type = lib.types.str;
         default = cfg.assetsOrigin;
-        defaultText = lib.literalExpression "config.services.openreplay.assetsOrigin";
         description = ''
           Browser-facing S3 endpoint used to *presign* session-replay asset URLs
           — the DOM "mob" files the player downloads, canvas frames, and
@@ -765,7 +756,6 @@ in
           url = "https://raw.githubusercontent.com/ua-parser/uap-core/v0.18.0/regexes.yaml";
           hash = "sha256-J0w3dO0Ma6yiJhl9L5eL/AYhcgFxiVR1o3dfC5+VSbo=";
         };
-        defaultText = lib.literalExpression "<fetched uap-core regexes.yaml>";
         description = "UAParser regexes file (UAPARSER_FILE); required by the http service.";
       };
       maxmind = lib.mkOption {
@@ -774,7 +764,6 @@ in
           url = "https://raw.githubusercontent.com/maxmind/MaxMind-DB/main/test-data/GeoLite2-City-Test.mmdb";
           hash = "sha256-+TZwK1HctslLKG13pvGCwxoWAbr0sn6OiWk03rQfSfI=";
         };
-        defaultText = lib.literalExpression "<fetched GeoLite2-City-Test.mmdb (sample data)>";
         description = ''
           MaxMind City DB (MAXMINDDB_FILE); required by the http service. The
           default is upstream *test* data — geo enrichment is sample-accurate
