@@ -47,6 +47,21 @@ let
   # double it so the process receives a literal %s.
   assistUrlEnv = lib.replaceStrings [ "%" ] [ "%%" ] assistUrl;
 
+  # SMTP env shared by the two services that send mail (the Python dashboard API
+  # and the alerts scheduler). Read via python-decouple. A null host leaves email
+  # unconfigured (no EMAIL_* emitted, so upstream's empty env.default disables
+  # sending). EMAIL_PASSWORD is a secret, carried through allSecrets/LoadCredential.
+  smtpEnv = lib.optionalAttrs (cfg.smtp.host != null) {
+    EMAIL_FROM = cfg.smtp.from;
+    EMAIL_HOST = cfg.smtp.host;
+    EMAIL_PORT = toString cfg.smtp.port;
+    EMAIL_USER = lib.optionalString (cfg.smtp.user != null) cfg.smtp.user;
+    EMAIL_USE_TLS = lib.boolToString cfg.smtp.useTls;
+    EMAIL_USE_SSL = lib.boolToString cfg.smtp.useSsl;
+    EMAIL_SSL_CERT = lib.optionalString (cfg.smtp.sslCert != null) cfg.smtp.sslCert;
+    EMAIL_SSL_KEY = lib.optionalString (cfg.smtp.sslKey != null) cfg.smtp.sslKey;
+  };
+
   # Secret handling: each secret has a plain `xxx` and an `xxxFile` option. A *File
   # loads via systemd LoadCredential (never hits the store); a plain value goes via
   # Environment= (which does — the documented tradeoff). DSN passwords (PG/Redis/CH)
@@ -91,6 +106,10 @@ let
     ASSIST_JWT_SECRET = {
       plain = cfg.secrets.assistJwtSecret;
       file = cfg.secrets.assistJwtSecretFile;
+    };
+    EMAIL_PASSWORD = {
+      plain = cfg.smtp.password;
+      file = cfg.smtp.passwordFile;
     };
   };
 
@@ -301,6 +320,62 @@ in
         Shared path segment for the assist socket (/assist/<key>), used by the
         assist server and the dashboard/API. Not a secret.
       '';
+    };
+
+    # SMTP used by the dashboard API (invites, password resets) and the alerts
+    # scheduler (alert/weekly-report emails). Leave `host` empty to disable email.
+    smtp = {
+      host = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "smtp.example.com";
+        description = "SMTP server host (EMAIL_HOST). Null (the default) disables all email.";
+      };
+      port = lib.mkOption {
+        type = lib.types.port;
+        default = 587;
+        description = "SMTP server port (EMAIL_PORT).";
+      };
+      user = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "SMTP login user (EMAIL_USER). Null skips authentication.";
+      };
+      password = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "SMTP login password (EMAIL_PASSWORD; plain, ends up in the Nix store).";
+      };
+      passwordFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Runtime path to a file holding the SMTP password (kept out of the store).";
+      };
+      from = lib.mkOption {
+        type = lib.types.str;
+        default = "OpenReplay <do-not-reply@openreplay.com>";
+        description = "From header on outgoing mail (EMAIL_FROM).";
+      };
+      useTls = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Use STARTTLS (EMAIL_USE_TLS). Ignored when useSsl is true.";
+      };
+      useSsl = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Use implicit TLS / SMTPS (EMAIL_USE_SSL). Takes precedence over useTls.";
+      };
+      sslCert = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional client-certificate path for SSL mode (EMAIL_SSL_CERT).";
+      };
+      sslKey = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional client-certificate key path for SSL mode (EMAIL_SSL_KEY).";
+      };
     };
 
     initSchema = lib.mkOption {
@@ -796,6 +871,10 @@ in
       {
         assertion = !(cfg.s3.secretKey != null && cfg.s3.secretKeyFile != null);
         message = "Set only one of services.openreplay.s3.secretKey / secretKeyFile.";
+      }
+      {
+        assertion = !(cfg.smtp.password != null && cfg.smtp.passwordFile != null);
+        message = "Set only one of services.openreplay.smtp.password / passwordFile.";
       }
     ];
 
@@ -1313,6 +1392,7 @@ in
             "JWT_SPOT_SECRET"
             "JWT_SPOT_REFRESH_SECRET"
             "ASSIST_JWT_SECRET"
+            "EMAIL_PASSWORD"
           ];
           environment = {
             pg_host = cfg.postgres.host;
@@ -1344,7 +1424,8 @@ in
             # http://host:port/smr/sourcemaps, matching the sourcemapreader route.
             # The literal {} is Python str.format (not shell/systemd), passed through.
             sourcemaps_reader = "http://${cfg.listenAddress}:${toString cfg.sourcemapreader.port}/{}/sourcemaps";
-          };
+          }
+          // smtpEnv;
           command = pkgs.writeShellApplication {
             name = "openreplay-pyapi";
             runtimeInputs = [ pkgs.coreutils ];
@@ -1359,6 +1440,7 @@ in
                 "JWT_SPOT_SECRET"
                 "JWT_SPOT_REFRESH_SECRET"
                 "ASSIST_JWT_SECRET"
+                "EMAIL_PASSWORD"
               ]).preamble
               }
               # The Python API reads these under its own names (python-decouple).
@@ -1443,6 +1525,7 @@ in
             "JWT_SPOT_SECRET"
             "JWT_SPOT_REFRESH_SECRET"
             "ASSIST_JWT_SECRET"
+            "EMAIL_PASSWORD"
           ];
           environment = {
             pg_host = cfg.postgres.host;
@@ -1464,7 +1547,8 @@ in
             SITE_URL = cfg.siteUrl;
             LISTEN_PORT = toString cfg.alerts.port;
             ASSIST_KEY = "ignore";
-          };
+          }
+          // smtpEnv;
           command = pkgs.writeShellApplication {
             name = "openreplay-alerts-run";
             runtimeInputs = [ pkgs.coreutils ];
@@ -1479,6 +1563,7 @@ in
                 "JWT_SPOT_SECRET"
                 "JWT_SPOT_REFRESH_SECRET"
                 "ASSIST_JWT_SECRET"
+                "EMAIL_PASSWORD"
               ]).preamble
               }
               export pg_password="''${OR_PG_PASSWORD:-}"
