@@ -17,6 +17,8 @@ buildGoModule {
   src = openreplay-src;
   modRoot = "backend";
 
+  patches = [ ./openreplay-backend-metrics-port.patch ];
+
   subPackages = [
     "cmd/http"
     "cmd/sink"
