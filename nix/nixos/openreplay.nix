@@ -42,7 +42,7 @@ let
 
   # APIs build the live-session URL as sprintf(ASSIST_URL, ASSIST_KEY), so the %s
   # placeholder is required (matches upstream chalice/api env).
-  assistUrl = "http://${cfg.listenAddress}:${toString cfg.ports.assist}/assist/%s";
+  assistUrl = "http://${cfg.listenAddress}:${toString cfg.assist.port}/assist/%s";
   # systemd expands %-specifiers in Environment= values, eating the %s above;
   # double it so the process receives a literal %s.
   assistUrlEnv = lib.replaceStrings [ "%" ] [ "%%" ] assistUrl;
@@ -236,48 +236,23 @@ in
     package = lib.mkOption {
       type = lib.types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-backend;
-      defaultText = lib.literalExpression "openreplay-nix.packages.\${system}.openreplay-backend";
       description = "The Go backend package (also provides the pinned source via `.src`).";
     };
-    dashboardPackage = lib.mkOption {
-      type = lib.types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-dashboard;
-      defaultText = lib.literalExpression "openreplay-nix.packages.\${system}.openreplay-dashboard";
-      description = "The built dashboard SPA (static site).";
-    };
-    assistPackage = lib.mkOption {
-      type = lib.types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-assist;
-      defaultText = lib.literalExpression "openreplay-nix.packages.\${system}.openreplay-assist";
-      description = "The assist server package (live sessions / co-browsing).";
-    };
-    sourcemapreaderPackage = lib.mkOption {
-      type = lib.types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-sourcemapreader;
-      defaultText = lib.literalExpression "openreplay-nix.packages.\${system}.openreplay-sourcemapreader";
-      description = "The sourcemapreader server package (JS stack-trace symbolication).";
-    };
-    chalicePackage = lib.mkOption {
-      type = lib.types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-chalice;
-      defaultText = lib.literalExpression "openreplay-nix.packages.\${system}.openreplay-chalice";
-      description = "The chalice dashboard REST API package (uvicorn app:app).";
-    };
-    alertsPackage = lib.mkOption {
-      type = lib.types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-alerts;
-      defaultText = lib.literalExpression "openreplay-nix.packages.\${system}.openreplay-alerts";
-      description = "The alerts scheduler package (uvicorn app_alerts:app).";
-    };
-    dashboardRoot = lib.mkOption {
-      type = lib.types.path;
-      readOnly = true;
-      default = cfg.dashboardPackage;
-      defaultText = lib.literalExpression "config.services.openreplay.dashboardPackage";
-      description = ''
-        The static dashboard SPA root. Point your reverse proxy's document root
-        at this; this module does not serve it.
-      '';
+    dashboard = {
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-dashboard;
+        description = "The built dashboard SPA (static site).";
+      };
+      root = lib.mkOption {
+        type = lib.types.path;
+        readOnly = true;
+        default = cfg.dashboard.package;
+        description = ''
+          The static dashboard SPA root. Point your reverse proxy's document root
+          at this; this module does not serve it.
+        '';
+      };
     };
 
     user = lib.mkOption {
@@ -308,7 +283,6 @@ in
     assetsOrigin = lib.mkOption {
       type = lib.types.str;
       default = cfg.siteUrl;
-      defaultText = lib.literalExpression "config.services.openreplay.siteUrl";
       description = "Origin recorded assets are served from (ASSETS_ORIGIN).";
     };
     assistKey = lib.mkOption {
@@ -421,96 +395,159 @@ in
       };
     };
 
-    ports = {
-      http = lib.mkOption {
+    # Ingestion-pipeline Go workers. Each shares the backend `package` above and
+    # exposes only its own port here.
+    http = {
+      port = lib.mkOption {
         type = lib.types.port;
         default = 8100;
         description = "Ingest (http) service port.";
       };
-      sink = lib.mkOption {
+    };
+    sink = {
+      port = lib.mkOption {
         type = lib.types.port;
         default = 8101;
         description = "sink service health port.";
       };
-      db = lib.mkOption {
+    };
+    db = {
+      port = lib.mkOption {
         type = lib.types.port;
         default = 8102;
         description = "db service health port.";
       };
-      ender = lib.mkOption {
+    };
+    ender = {
+      port = lib.mkOption {
         type = lib.types.port;
         default = 8103;
         description = "ender service health port.";
       };
-      storage = lib.mkOption {
+    };
+    storage = {
+      port = lib.mkOption {
         type = lib.types.port;
         default = 8104;
         description = "storage service health port.";
       };
-      assets = lib.mkOption {
+    };
+    assets = {
+      port = lib.mkOption {
         type = lib.types.port;
         default = 8105;
         description = "assets service port.";
       };
-      goApi = lib.mkOption {
-        type = lib.types.port;
-        default = 8106;
-        description = "Go \"v2\" API port (session search, served at /v2/api).";
-      };
-      dashboardApi = lib.mkOption {
-        type = lib.types.port;
-        default = 8000;
-        description = "Python dashboard REST API port (served at /api).";
-      };
-      assist = lib.mkOption {
-        type = lib.types.port;
-        default = 8107;
-        description = "Assist (live sessions) socket.io port; proxy /assist + /ws-assist here.";
-      };
-      assistHealth = lib.mkOption {
-        type = lib.types.port;
-        default = 8108;
-        description = "Assist health/metrics port.";
-      };
-      heuristics = lib.mkOption {
+    };
+    heuristics = {
+      port = lib.mkOption {
         type = lib.types.port;
         default = 8109;
         description = "heuristics service health port.";
       };
-      integrations = lib.mkOption {
+    };
+    integrations = {
+      port = lib.mkOption {
         type = lib.types.port;
         default = 8110;
         description = "integrations service HTTP port (proxy /integrations here).";
       };
-      sourcemapreader = lib.mkOption {
-        type = lib.types.port;
-        default = 8111;
-        description = "sourcemapreader service port (queried by the dashboard API).";
-      };
-      sourcemapreaderHealth = lib.mkOption {
-        type = lib.types.port;
-        default = 8112;
-        description = "sourcemapreader health port.";
-      };
-      alerts = lib.mkOption {
-        type = lib.types.port;
-        default = 8113;
-        description = "alerts scheduler health/listen port.";
-      };
-      canvases = lib.mkOption {
+    };
+    canvases = {
+      port = lib.mkOption {
         type = lib.types.port;
         default = 8114;
         description = "canvases service port (web canvas uploads at /v1/web/images).";
       };
-      images = lib.mkOption {
+    };
+    images = {
+      port = lib.mkOption {
         type = lib.types.port;
         default = 8115;
         description = "images service port (mobile screenshot uploads at /v1/mobile/images).";
       };
-      spot = lib.mkOption {
+    };
+    spot = {
+      port = lib.mkOption {
         type = lib.types.port;
         default = 8116;
         description = "spot service port (Spot recorder REST API; proxy /spot here).";
+      };
+    };
+
+    # Go "v2" API (session search etc.); also shares the backend `package`.
+    # Named `api` to match upstream (backend/cmd/api, SERVICE_NAME=api).
+    api = {
+      port = lib.mkOption {
+        type = lib.types.port;
+        default = 8106;
+        description = "Go \"v2\" API port (session search, served at /v2/api).";
+      };
+    };
+
+    # Python dashboard REST API (chalice; FastAPI/uvicorn).
+    chalice = {
+      port = lib.mkOption {
+        type = lib.types.port;
+        default = 8000;
+        description = "Python dashboard REST API port (served at /api).";
+      };
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-chalice;
+        description = "The chalice dashboard REST API package (uvicorn app:app).";
+      };
+    };
+
+    # Assist: live sessions / co-browsing (Node + socket.io).
+    assist = {
+      port = lib.mkOption {
+        type = lib.types.port;
+        default = 8107;
+        description = "Assist (live sessions) socket.io port; proxy /assist + /ws-assist here.";
+      };
+      healthPort = lib.mkOption {
+        type = lib.types.port;
+        default = 8108;
+        description = "Assist health/metrics port.";
+      };
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-assist;
+        description = "The assist server package (live sessions / co-browsing).";
+      };
+    };
+
+    # sourcemapreader: JS stack-trace symbolication (Node/Express).
+    sourcemapreader = {
+      port = lib.mkOption {
+        type = lib.types.port;
+        default = 8111;
+        description = "sourcemapreader service port (queried by the dashboard API).";
+      };
+      healthPort = lib.mkOption {
+        type = lib.types.port;
+        default = 8112;
+        description = "sourcemapreader health port.";
+      };
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-sourcemapreader;
+        description = "The sourcemapreader server package (JS stack-trace symbolication).";
+      };
+    };
+
+    # alerts: notification scheduler (chalice codebase, uvicorn).
+    alerts = {
+      port = lib.mkOption {
+        type = lib.types.port;
+        default = 8113;
+        description = "alerts scheduler health/listen port.";
+      };
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = self.packages.${pkgs.stdenv.hostPlatform.system}.openreplay-alerts;
+        description = "The alerts scheduler package (uvicorn app_alerts:app).";
       };
     };
 
@@ -626,7 +663,6 @@ in
       publicEndpoint = lib.mkOption {
         type = lib.types.str;
         default = cfg.assetsOrigin;
-        defaultText = lib.literalExpression "config.services.openreplay.assetsOrigin";
         description = ''
           Browser-facing S3 endpoint used to *presign* session-replay asset URLs
           — the DOM "mob" files the player downloads, canvas frames, and
@@ -720,7 +756,6 @@ in
           url = "https://raw.githubusercontent.com/ua-parser/uap-core/v0.18.0/regexes.yaml";
           hash = "sha256-J0w3dO0Ma6yiJhl9L5eL/AYhcgFxiVR1o3dfC5+VSbo=";
         };
-        defaultText = lib.literalExpression "<fetched uap-core regexes.yaml>";
         description = "UAParser regexes file (UAPARSER_FILE); required by the http service.";
       };
       maxmind = lib.mkOption {
@@ -729,7 +764,6 @@ in
           url = "https://raw.githubusercontent.com/maxmind/MaxMind-DB/main/test-data/GeoLite2-City-Test.mmdb";
           hash = "sha256-+TZwK1HctslLKG13pvGCwxoWAbr0sn6OiWk03rQfSfI=";
         };
-        defaultText = lib.literalExpression "<fetched GeoLite2-City-Test.mmdb (sample data)>";
         description = ''
           MaxMind City DB (MAXMINDDB_FILE); required by the http service. The
           default is upstream *test* data — geo enrichment is sample-accurate
@@ -1127,7 +1161,7 @@ in
       {
         openreplay-http = goService {
           name = "http";
-          port = cfg.ports.http;
+          port = cfg.http.port;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1148,7 +1182,7 @@ in
 
         openreplay-sink = goService {
           name = "sink";
-          port = cfg.ports.sink;
+          port = cfg.sink.port;
           secretsNeeded = [
             "OR_PG_PASSWORD"
             "OR_REDIS_PASSWORD"
@@ -1164,7 +1198,7 @@ in
 
         openreplay-db = goService {
           name = "db";
-          port = cfg.ports.db;
+          port = cfg.db.port;
           clickhouse = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1181,7 +1215,7 @@ in
 
         openreplay-ender = goService {
           name = "ender";
-          port = cfg.ports.ender;
+          port = cfg.ender.port;
           secretsNeeded = [
             "OR_PG_PASSWORD"
             "OR_REDIS_PASSWORD"
@@ -1195,7 +1229,7 @@ in
 
         openreplay-storage = goService {
           name = "storage";
-          port = cfg.ports.storage;
+          port = cfg.storage.port;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1211,7 +1245,7 @@ in
 
         openreplay-assets = goService {
           name = "assets";
-          port = cfg.ports.assets;
+          port = cfg.assets.port;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1232,7 +1266,7 @@ in
         # its health handler), like sink/db/ender/storage.
         openreplay-heuristics = goService {
           name = "heuristics";
-          port = cfg.ports.heuristics;
+          port = cfg.heuristics.port;
           secretsNeeded = [ "OR_REDIS_PASSWORD" ];
           environment = {
             GROUP_HEURISTICS = "heuristics";
@@ -1248,7 +1282,7 @@ in
         # blobs dir (the service manages its own canvas/ subtree).
         openreplay-canvases = goService {
           name = "canvases";
-          port = cfg.ports.canvases;
+          port = cfg.canvases.port;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1271,7 +1305,7 @@ in
         # (screenshots/ subtree via SCREENSHOTS_DIR).
         openreplay-images = goService {
           name = "images";
-          port = cfg.ports.images;
+          port = cfg.images.port;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1294,7 +1328,7 @@ in
         # the spots bucket already exist. FS_DIR is the shared blobs dir (SPOTS_DIR).
         openreplay-spot = goService {
           name = "spot";
-          port = cfg.ports.spot;
+          port = cfg.spot.port;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1314,7 +1348,7 @@ in
         # proxied at /integrations. Binds a TCP port; touches PG, Redis, object store.
         openreplay-integrations = goService {
           name = "integrations";
-          port = cfg.ports.integrations;
+          port = cfg.integrations.port;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1329,7 +1363,7 @@ in
         };
 
         # Go "v2" API (dashboard session search etc.)
-        openreplay-goapi = mkService {
+        openreplay-api = mkService {
           description = "OpenReplay Go v2 API";
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1348,20 +1382,20 @@ in
               HOSTNAME = "openreplay-api";
               REDIS_STREAMS_MAX_LEN = "10000";
               HTTP_HOST = cfg.listenAddress;
-              HTTP_PORT = toString cfg.ports.goApi;
+              HTTP_PORT = toString cfg.api.port;
               JWT_ISSUER = "OpenReplay-oss";
               BUCKET_NAME = "mobs";
               # Presigns the replay DOM ("mob") URLs the player fetches from the
               # browser, so it must sign against the browser-reachable origin, not
               # the loopback `endpoint` other workers use. Overrides objectStorage's.
               AWS_ENDPOINT = cfg.s3.publicEndpoint;
-              FS_DIR = "${cfg.stateDir}/goapi";
+              FS_DIR = "${cfg.stateDir}/api";
               # Live sessions: query the assist server at sprintf(ASSIST_URL, ASSIST_KEY).
               ASSIST_URL = assistUrlEnv;
               ASSIST_KEY = cfg.assistKey;
             };
           command = pkgs.writeShellApplication {
-            name = "openreplay-goapi";
+            name = "openreplay-api";
             runtimeInputs = [ pkgs.coreutils ];
             text = ''
               ${(resolveSecrets [
@@ -1417,13 +1451,13 @@ in
             sourcemaps_bucket = "sourcemaps";
             sessions_region = cfg.s3.region;
             SITE_URL = cfg.siteUrl;
-            LISTEN_PORT = toString cfg.ports.dashboardApi;
+            LISTEN_PORT = toString cfg.chalice.port;
             ASSIST_URL = assistUrlEnv;
             ASSIST_KEY = cfg.assistKey;
             # Symbolication: chalice formats this with SMR_KEY (default "smr") ->
             # http://host:port/smr/sourcemaps, matching the sourcemapreader route.
             # The literal {} is Python str.format (not shell/systemd), passed through.
-            sourcemaps_reader = "http://${cfg.listenAddress}:${toString cfg.ports.sourcemapreader}/{}/sourcemaps";
+            sourcemaps_reader = "http://${cfg.listenAddress}:${toString cfg.sourcemapreader.port}/{}/sourcemaps";
           };
           command = pkgs.writeShellApplication {
             name = "openreplay-pyapi";
@@ -1446,7 +1480,7 @@ in
               export ch_password="''${OR_CH_PASSWORD:-}"
               export S3_SECRET="''${AWS_SECRET_ACCESS_KEY:-}"
               ${dsnPreamble { }}
-              exec ${lib.getExe cfg.chalicePackage} --host ${cfg.listenAddress} --port ${toString cfg.ports.dashboardApi} --proxy-headers --log-level warning
+              exec ${lib.getExe cfg.chalice.package} --host ${cfg.listenAddress} --port ${toString cfg.chalice.port} --proxy-headers --log-level warning
             '';
           };
         };
@@ -1460,8 +1494,8 @@ in
           environment = {
             SERVICE_NAME = "assist";
             LISTEN_HOST = cfg.listenAddress;
-            LISTEN_PORT = toString cfg.ports.assist;
-            HEALTH_PORT = toString cfg.ports.assistHealth;
+            LISTEN_PORT = toString cfg.assist.port;
+            HEALTH_PORT = toString cfg.assist.healthPort;
             ASSIST_KEY = cfg.assistKey;
             PREFIX = "/assist";
             # Single instance — no redis coordination (matches upstream assist.env).
@@ -1473,7 +1507,7 @@ in
             runtimeInputs = [ pkgs.coreutils ];
             text = ''
               ${(resolveSecrets [ "ASSIST_JWT_SECRET" ]).preamble}
-              exec ${lib.getExe cfg.assistPackage}
+              exec ${lib.getExe cfg.assist.package}
             '';
           };
         };
@@ -1487,10 +1521,10 @@ in
           environment = {
             SERVICE_NAME = "sourcemaps-reader";
             SMR_HOST = cfg.listenAddress;
-            SMR_PORT = toString cfg.ports.sourcemapreader;
+            SMR_PORT = toString cfg.sourcemapreader.port;
             # health.js binds its own listener on LISTEN_HOST:HEALTH_PORT.
             LISTEN_HOST = cfg.listenAddress;
-            HEALTH_PORT = toString cfg.ports.sourcemapreaderHealth;
+            HEALTH_PORT = toString cfg.sourcemapreader.healthPort;
             S3_HOST = cfg.s3.endpoint;
             S3_KEY = cfg.s3.accessKey;
             AWS_REGION = cfg.s3.region;
@@ -1502,7 +1536,7 @@ in
               ${(resolveSecrets [ "AWS_SECRET_ACCESS_KEY" ]).preamble}
               # The Node service reads the S3 secret from S3_SECRET.
               export S3_SECRET="''${AWS_SECRET_ACCESS_KEY:-}"
-              exec ${lib.getExe cfg.sourcemapreaderPackage}
+              exec ${lib.getExe cfg.sourcemapreader.package}
             '';
           };
         };
@@ -1542,7 +1576,7 @@ in
             sourcemaps_bucket = "sourcemaps";
             sessions_region = cfg.s3.region;
             SITE_URL = cfg.siteUrl;
-            LISTEN_PORT = toString cfg.ports.alerts;
+            LISTEN_PORT = toString cfg.alerts.port;
             ASSIST_KEY = "ignore";
           };
           command = pkgs.writeShellApplication {
@@ -1565,7 +1599,7 @@ in
               export ch_password="''${OR_CH_PASSWORD:-}"
               export S3_SECRET="''${AWS_SECRET_ACCESS_KEY:-}"
               ${dsnPreamble { }}
-              exec ${lib.getExe cfg.alertsPackage} --host ${cfg.listenAddress} --port ${toString cfg.ports.alerts} --log-level warning
+              exec ${lib.getExe cfg.alerts.package} --host ${cfg.listenAddress} --port ${toString cfg.alerts.port} --log-level warning
             '';
           };
         };
