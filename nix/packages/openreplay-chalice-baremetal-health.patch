@@ -1,0 +1,63 @@
+diff --git a/chalicelib/core/health.py b/chalicelib/core/health.py
+index 7184e320d..b5789cc69 100644
+--- a/chalicelib/core/health.py
++++ b/chalicelib/core/health.py
+@@ -11,10 +11,38 @@ from chalicelib.utils.log import sanitize
+ logger = logging.getLogger(__name__)
+ 
+ 
++# Opinionated /health ports per service for non-Kubernetes, single-host deploys,
++# matching the port each backend binds when POD_NAMESPACE is unset (the Go metrics
++# server's per-service default, and the assist / sourcemapreader / alerts services).
++# Keep in sync with the backend metrics server and the NixOS module's `metricsPort`
++# defaults. HEALTH_HOST overrides the host; HEALTH_ENDPOINT_<SERVICE> a whole URL.
++LOOPBACK_HEALTH_PORTS = {
++    "alerts-openreplay": 8113,
++    "assets-openreplay": 8125,
++    "assist-openreplay": 8108,
++    "db-openreplay": 8122,
++    "ender-openreplay": 8132,
++    "heuristics-openreplay": 8126,
++    "http-openreplay": 8120,
++    "integrations-openreplay": 8127,
++    "sink-openreplay": 8121,
++    "sourcemapreader-openreplay": 8112,
++    "storage-openreplay": 8124,
++}
++
++
+ def app_connection_string(name, port, path):
+-    namespace = config("POD_NAMESPACE", default="app")
+-    conn_string = config("CLUSTER_URL", default="svc.cluster.local")
+-    return f"http://{name}.{namespace}.{conn_string}:{port}/{path}"
++    namespace = config("POD_NAMESPACE", default="")
++    if namespace:
++        # Kubernetes: resolve via the pod's service DNS, as upstream does.
++        conn_string = config("CLUSTER_URL", default="svc.cluster.local")
++        return f"http://{name}.{namespace}.{conn_string}:{port}/{path}"
++    # Bare-metal / single-host: no cluster DNS exists, so probe the service on
++    # loopback at its own /health port. HEALTH_HOST overrides the host (e.g. the
++    # deployment's listen address).
++    host = config("HEALTH_HOST", default="127.0.0.1")
++    port = LOOPBACK_HEALTH_PORTS.get(name, port)
++    return f"http://{host}:{port}/{path}"
+ 
+ 
+ HEALTH_ENDPOINTS = {
+@@ -80,8 +108,15 @@ def __check_be_service(service_name):
+             "health": False,
+             "details": {"errors": ["server health-check failed"]},
+         }
++        # Allow the whole probe URL to be overridden per service, e.g.
++        # HEALTH_ENDPOINT_HTTP=http://127.0.0.1:8120/health, for deployments that
++        # place a service somewhere app_connection_string can't derive.
++        endpoint = config(
++            f"HEALTH_ENDPOINT_{service_name.upper().replace('-', '_')}",
++            default=HEALTH_ENDPOINTS.get(service_name),
++        )
+         try:
+-            results = requests.get(HEALTH_ENDPOINTS.get(service_name), timeout=2)
++            results = requests.get(endpoint, timeout=2)
+             if results.status_code != 200:
+                 logger.error(
+                     f"!! issue with the {service_name}-health code:{results.status_code}"

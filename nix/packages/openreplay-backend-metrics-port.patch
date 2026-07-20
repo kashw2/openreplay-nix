@@ -1,0 +1,65 @@
+diff --git a/backend/pkg/metrics/server.go b/backend/pkg/metrics/server.go
+index b889c4dbf..e3c7a76a5 100644
+--- a/backend/pkg/metrics/server.go
++++ b/backend/pkg/metrics/server.go
+@@ -3,6 +3,7 @@ package metrics
+ import (
+ 	"context"
+ 	"net/http"
++	"os"
+ 
+ 	"github.com/prometheus/client_golang/prometheus"
+ 	"github.com/prometheus/client_golang/prometheus/collectors"
+@@ -15,6 +16,44 @@ type MetricServer struct {
+ 	registry *prometheus.Registry
+ }
+ 
++// Opinionated default /metrics + /health port per service for non-Kubernetes,
++// single-host deploys. Upstream binds every service on :8888, which is fine on
++// Kubernetes because each pod has its own network namespace, but co-locating the
++// services on one host makes them collide. When POD_NAMESPACE is unset each
++// service instead binds its own port keyed by SERVICE_NAME; METRICS_PORT overrides
++// it explicitly. Keep this in sync with the health-check probe ports (the dashboard
++// API's health.py) and the NixOS module's per-service `metricsPort` defaults.
++var defaultMetricsPortBySvc = map[string]string{
++	"http":         "8120",
++	"sink":         "8121",
++	"db":           "8122",
++	"ender":        "8132", // 8123 avoided: ClickHouse's default HTTP port
++	"storage":      "8124",
++	"assets":       "8125",
++	"heuristics":   "8126",
++	"integrations": "8127",
++	"canvases":     "8128",
++	"images":       "8129",
++	"spot":         "8130",
++	"api":          "8131",
++}
++
++// metricsAddr resolves the listen address for the metrics/health server:
++// METRICS_PORT wins if set; otherwise the shared :8888 inside Kubernetes
++// (POD_NAMESPACE present) or the per-service default outside it.
++func metricsAddr() string {
++	port := "8888"
++	if os.Getenv("POD_NAMESPACE") == "" {
++		if p, ok := defaultMetricsPortBySvc[os.Getenv("SERVICE_NAME")]; ok {
++			port = p
++		}
++	}
++	if p := os.Getenv("METRICS_PORT"); p != "" {
++		port = p
++	}
++	return ":" + port
++}
++
+ func New(log logger.Logger, cs []prometheus.Collector) {
+ 	registry := prometheus.NewRegistry()
+ 	// Add go runtime metrics and process collectors.
+@@ -33,6 +72,6 @@ func New(log logger.Logger, cs []prometheus.Collector) {
+ 			}),
+ 	)
+ 	go func() {
+-		log.Error(context.Background(), "%v", http.ListenAndServe(":8888", nil))
++		log.Error(context.Background(), "%v", http.ListenAndServe(metricsAddr(), nil))
+ 	}()
+ }

@@ -8,9 +8,17 @@
   lib,
   writeShellApplication,
   coreutils,
+  applyPatches,
   openreplay-src,
   pythonEnv,
 }:
+let
+  patchedApi = applyPatches {
+    name = "openreplay-api-baremetal-health";
+    src = openreplay-src + "/api";
+    patches = [ ./openreplay-chalice-baremetal-health.patch ];
+  };
+in
 writeShellApplication {
   name = "openreplay-chalice";
   runtimeInputs = [
@@ -20,7 +28,7 @@ writeShellApplication {
   text = ''
     work="''${TMPDIR:-/tmp}/openreplay-chalice-work"
     rm -rf "$work" && mkdir -p "$work" && chmod 700 "$work"
-    cp -r ${openreplay-src}/api/. "$work/" && chmod -R u+w "$work"
+    cp -r ${patchedApi}/. "$work/" && chmod -R u+w "$work"
     cd "$work"
     [ -f env.default ] && mv -f env.default .env
     exec uvicorn app:app "$@"
