@@ -480,7 +480,8 @@ in
     };
 
     # Go "v2" API (session search etc.); also shares the backend `package`.
-    goApi = {
+    # Named `api` to match upstream (backend/cmd/api, SERVICE_NAME=api).
+    api = {
       port = lib.mkOption {
         type = lib.types.port;
         default = 8106;
@@ -1373,7 +1374,7 @@ in
         };
 
         # Go "v2" API (dashboard session search etc.)
-        openreplay-goapi = mkService {
+        openreplay-api = mkService {
           description = "OpenReplay Go v2 API";
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1392,20 +1393,20 @@ in
               HOSTNAME = "openreplay-api";
               REDIS_STREAMS_MAX_LEN = "10000";
               HTTP_HOST = cfg.listenAddress;
-              HTTP_PORT = toString cfg.goApi.port;
+              HTTP_PORT = toString cfg.api.port;
               JWT_ISSUER = "OpenReplay-oss";
               BUCKET_NAME = "mobs";
               # Presigns the replay DOM ("mob") URLs the player fetches from the
               # browser, so it must sign against the browser-reachable origin, not
               # the loopback `endpoint` other workers use. Overrides objectStorage's.
               AWS_ENDPOINT = cfg.s3.publicEndpoint;
-              FS_DIR = "${cfg.stateDir}/goapi";
+              FS_DIR = "${cfg.stateDir}/api";
               # Live sessions: query the assist server at sprintf(ASSIST_URL, ASSIST_KEY).
               ASSIST_URL = assistUrlEnv;
               ASSIST_KEY = cfg.assistKey;
             };
           command = pkgs.writeShellApplication {
-            name = "openreplay-goapi";
+            name = "openreplay-api";
             runtimeInputs = [ pkgs.coreutils ];
             text = ''
               ${(resolveSecrets [

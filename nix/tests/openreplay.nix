@@ -187,7 +187,7 @@ pkgs.testers.runNixOSTest {
         machine.wait_for_open_port(8116)
 
     with subtest("APIs and assist server start and listen"):
-        machine.wait_for_unit("openreplay-goapi.service")
+        machine.wait_for_unit("openreplay-api.service")
         machine.wait_for_open_port(8106)
         machine.wait_for_unit("openreplay-chalice.service")
         machine.wait_for_open_port(8000)
