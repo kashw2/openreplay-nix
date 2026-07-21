@@ -310,8 +310,19 @@ in
     };
     assetsOrigin = lib.mkOption {
       type = lib.types.str;
-      default = cfg.siteUrl;
-      description = "Origin recorded assets are served from (ASSETS_ORIGIN).";
+      default = "${cfg.siteUrl}/sessions-assets";
+      description = ''
+        Origin recorded assets are served from (ASSETS_ORIGIN). The sink/assets
+        workers rewrite cachable resources (external CSS and @font-face files) in
+        the recorded DOM to `<assetsOrigin>/<url-encoded-original>` and cache the
+        bytes into the `sessions-assets` bucket. So this MUST include the
+        `/sessions-assets` path (matching upstream's docker-compose/helm) — the
+        reverse proxy routes that path to the object store. Pointing it at the
+        bare site (no path) makes the rewritten stylesheet URLs resolve to the
+        dashboard's SPA fallback (index.html), so the player fetches HTML in place
+        of every stylesheet and replays render unstyled while live cobrowse — which
+        streams the live CSSOM and never touches this origin — looks fine.
+      '';
     };
     assistKey = lib.mkOption {
       type = lib.types.str;
@@ -743,7 +754,7 @@ in
       };
       publicEndpoint = lib.mkOption {
         type = lib.types.str;
-        default = cfg.assetsOrigin;
+        default = cfg.siteUrl;
         description = ''
           Browser-facing S3 endpoint used to *presign* session-replay asset URLs
           — the DOM "mob" files the player downloads, canvas frames, and
@@ -753,11 +764,14 @@ in
           to the object store while forwarding the original Host header
           unchanged (SigV4 signs the host, so a rewritten Host fails validation).
 
-          Defaults to assetsOrigin (the public site). Leaving this equal to
-          `endpoint` — e.g. a loopback address — only works when the browser
-          runs on this same host (a local dev stack); on a real deployment the
-          presigned URLs would point at an address the browser cannot reach and
-          replays render blank.
+          Defaults to the bare siteUrl — NOT assetsOrigin. boto3 appends the
+          bucket to this endpoint (`<publicEndpoint>/mobs/<key>`), so it must be
+          the site root; assetsOrigin carries a `/sessions-assets` path that would
+          mis-route the presigned bucket paths. Leaving this equal to `endpoint`
+          — e.g. a loopback address — only works when the browser runs on this
+          same host (a local dev stack); on a real deployment the presigned URLs
+          would point at an address the browser cannot reach and replays render
+          blank.
         '';
       };
       region = lib.mkOption {
