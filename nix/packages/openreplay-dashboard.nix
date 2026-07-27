@@ -32,7 +32,6 @@ stdenv.mkDerivation {
   # Frontend source fixes — see each patch header for the full rationale.
   patches = [
     ./openreplay-dashboard-player-css.patch
-    ./openreplay-dashboard-assist-confirm.patch
   ];
 
   configurePhase = ''
