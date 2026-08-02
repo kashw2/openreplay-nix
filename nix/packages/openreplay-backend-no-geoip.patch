@@ -1,0 +1,40 @@
+diff --git a/backend/internal/config/http/config.go b/backend/internal/config/http/config.go
+index b95714b..318fd86 100644
+--- a/backend/internal/config/http/config.go
++++ b/backend/internal/config/http/config.go
+@@ -25,7 +25,7 @@ type Config struct {
+ 	BeaconSizeLimit      int64         `env:"BEACON_SIZE_LIMIT,required"`
+ 	CompressionThreshold int64         `env:"COMPRESSION_THRESHOLD,default=20000"`
+ 	UAParserFile         string        `env:"UAPARSER_FILE,required"`
+-	MaxMinDBFile         string        `env:"MAXMINDDB_FILE,required"`
++	MaxMinDBFile         string        `env:"MAXMINDDB_FILE"`
+ 	UseProfiler          bool          `env:"PROFILER_ENABLED,default=false"`
+ 	ProjectExpiration    time.Duration `env:"PROJECT_EXPIRATION,default=10m"`
+ 	RecordCanvas         bool          `env:"RECORD_CANVAS,default=false"`
+diff --git a/backend/internal/http/geoip/geoip.go b/backend/internal/http/geoip/geoip.go
+index c580c54..30b1f77 100644
+--- a/backend/internal/http/geoip/geoip.go
++++ b/backend/internal/http/geoip/geoip.go
+@@ -58,6 +58,11 @@ type geoParser struct {
+ }
+ 
+ func New(log logger.Logger, file string) (GeoParser, error) {
++	// No GeoIP database configured: return a no-op parser that yields empty geo
++	// records instead of failing the service at startup.
++	if file == "" {
++		return &geoParser{log: log}, nil
++	}
+ 	r, err := maxminddb.Open(file)
+ 	if err != nil {
+ 		return nil, err
+@@ -74,6 +79,10 @@ func (geoIP *geoParser) Parse(ip net.IP) (*GeoRecord, error) {
+ 		State:   "",
+ 		City:    "",
+ 	}
++	// No database loaded (MAXMINDDB_FILE unset): every lookup yields the default.
++	if geoIP.r == nil {
++		return res, nil
++	}
+ 	if ip == nil {
+ 		return res, errors.New("IP is nil")
+ 	}
