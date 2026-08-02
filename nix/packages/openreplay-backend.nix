@@ -17,7 +17,12 @@ buildGoModule {
   src = openreplay-src;
   modRoot = "backend";
 
-  patches = [ ./openreplay-backend-metrics-port.patch ];
+  patches = [
+    ./openreplay-backend-metrics-port.patch
+    # Make GeoIP optional: MAXMINDDB_FILE unset -> no-op geo enrichment instead
+    # of failing http/assist at startup.
+    ./openreplay-backend-no-geoip.patch
+  ];
 
   subPackages = [
     "cmd/http"
