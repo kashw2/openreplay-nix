@@ -13,13 +13,13 @@
   yarn-berry_4,
 }:
 let
-  version = "main-backup-20260820092929-unstable-2026-08-20";
+  version = "main-backup-20260820092929-unstable-2026-08-31";
   src = fetchFromGitHub {
     owner = "openreplay";
     repo = "openreplay";
     # Upstream doesn't release a new tag on every commit into main so builds cannot be idempotent using the `tag` attr
-    rev = "99eb60032f70906f6887195c400f173c00a08522";
-    hash = "sha256-8bM7VIh8UJdWfBNlttngxcynqfpK+PFJgazfE9ONeG4=";
+    rev = "7ac37a89fe2fefd4a907736053bb7403cd1e182c";
+    hash = "sha256-GS/jkl1gsnvVI7TB7TvfLXdL7eNb0QISU8xNl9oYeVs=";
   };
 in
 src.overrideAttrs (old: {
