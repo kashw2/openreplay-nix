@@ -42,8 +42,7 @@ let
   # systemd eats %-specifiers in Environment=, so double it to pass a literal %s.
   assistUrlEnv = lib.replaceStrings [ "%" ] [ "%%" ] assistUrl;
 
-  # Shared by the chalice API and the alerts scheduler (python-decouple).
-  # A null host emits no EMAIL_*, which disables sending upstream.
+  # Shared by the chalice API and the alerts scheduler (python-decouple). A null host emits no EMAIL_*, which disables sending upstream.
   smtpEnv = lib.optionalAttrs (cfg.smtp.host != null) {
     EMAIL_FROM = cfg.smtp.from;
     EMAIL_HOST = cfg.smtp.host;
@@ -55,8 +54,7 @@ let
     EMAIL_SSL_KEY = lib.optionalString (cfg.smtp.sslKey != null) cfg.smtp.sslKey;
   };
 
-  # Every secret is a path to a file holding it (sops-nix, agenix, systemd-creds):
-  # loaded via LoadCredential, exported from $CREDENTIALS_DIRECTORY, never in the store.
+  # Every secret is a path to a file holding it (sops-nix, agenix, systemd-creds): loaded via LoadCredential, exported from $CREDENTIALS_DIRECTORY, never in the store.
   allSecrets = {
     OR_PG_PASSWORD = cfg.postgres.passwordFile;
     OR_REDIS_PASSWORD = cfg.redis.passwordFile;
@@ -126,8 +124,7 @@ let
     ]
     ++ lib.optional cfg.initBuckets "openreplay-buckets.service";
 
-  # Ports for the Go services; feeds both the options and the units so they can't drift.
-  # `desc` completes "… port." in the option description.
+  # Ports for the Go services; feeds both the options and the units so they can't drift. `desc` completes "… port." in the option description.
   goServicePorts = {
     http = {
       port = 8100;
@@ -192,8 +189,7 @@ let
     };
   };
 
-  # Export the service's secrets, then run its body. Built here so a service names
-  # its secrets once, in `secretsNeeded`.
+  # Export the service's secrets, then run its body. Built here so a service names its secrets once, in `secretsNeeded`.
   mkScript =
     name: secretsNeeded: body:
     pkgs.writeShellApplication {
@@ -860,8 +856,7 @@ in
         };
       })
 
-      # one-shot: ClickHouse retention TTLs. OSS keeps session data forever; MODIFY TTL
-      # is idempotent. Blob expiry is in the buckets one-shot.
+      # one-shot: ClickHouse retention TTLs. OSS keeps session data forever; MODIFY TTL is idempotent. Blob expiry is in the buckets one-shot.
       (lib.mkIf (cfg.retention.days != null && cfg.initSchema) {
         openreplay-retention = mkOneShot {
           description = "OpenReplay ClickHouse data-retention TTLs";
@@ -876,8 +871,7 @@ in
             in
             ''
               ${chClientArgs}
-              # Sessions expire on `datetime`, events on `created_at`; keep upstream's
-              # soft-delete purge as a second clause.
+              # Sessions expire on `datetime`, events on `created_at`; keep upstream's soft-delete purge as a second clause.
               clickhouse-client "''${args[@]}" --query \
                 "ALTER TABLE experimental.sessions MODIFY TTL datetime + INTERVAL ${d} DAY"
               clickhouse-client "''${args[@]}" --query \
@@ -1054,8 +1048,7 @@ in
           };
         };
 
-        # Per-session <canvas> snapshots. Tracker POSTs to /v1/web/images; also consumes
-        # the canvas-trigger stream from ender. Buffers under FS_DIR/CANVAS_DIR -> mobs.
+        # Per-session <canvas> snapshots. Tracker POSTs to /v1/web/images; also consumes the canvas-trigger stream from ender. Buffers under FS_DIR/CANVAS_DIR -> mobs.
         openreplay-canvases = goService {
           name = "canvases";
           objectStore = true;
@@ -1073,8 +1066,7 @@ in
           };
         };
 
-        # Mobile replay screenshots. SDK POSTs to /v1/mobile/images; also consumes
-        # raw-images. Buffers under FS_DIR/SCREENSHOTS_DIR -> mobs.
+        # Mobile replay screenshots. SDK POSTs to /v1/mobile/images; also consumes raw-images. Buffers under FS_DIR/SCREENSHOTS_DIR -> mobs.
         openreplay-images = goService {
           name = "images";
           objectStore = true;
@@ -1092,8 +1084,7 @@ in
           };
         };
 
-        # Spot: browser-extension screen recorder, not session replay. REST API at
-        # /v1/spots; proxy /spot/ stripping the prefix. Dashboard JWT + Spot JWT.
+        # Spot: browser-extension screen recorder, not session replay. REST API at /v1/spots; proxy /spot/ stripping the prefix. Dashboard JWT + Spot JWT.
         openreplay-spot = goService {
           name = "spot";
           objectStore = true;
@@ -1152,8 +1143,7 @@ in
               METRICS_PORT = toString cfg.api.metricsPort;
               JWT_ISSUER = "OpenReplay-oss";
               BUCKET_NAME = "mobs";
-              # Presigns the replay DOM for the browser, so it must sign against a
-              # browser-reachable origin, not the loopback `endpoint`.
+              # Presigns the replay DOM for the browser, so it must sign against a browser-reachable origin, not the loopback `endpoint`.
               AWS_ENDPOINT = cfg.s3.publicEndpoint;
               FS_DIR = "${cfg.stateDir}/api";
               # Live sessions: query the assist server at sprintf(ASSIST_URL, ASSIST_KEY).
@@ -1192,8 +1182,7 @@ in
             ch_port = toString cfg.clickhouse.tcpPort;
             ch_port_http = toString cfg.clickhouse.httpPort;
             ch_user = cfg.clickhouse.username;
-            # Internal: boto3 presigns virtual-hosted URLs the gateway can't route. Only
-            # supplementary assets (canvas frames, sourcemaps); the DOM is signed by the Go API.
+            # Internal: boto3 presigns virtual-hosted URLs the gateway can't route. Only supplementary assets (canvas frames, sourcemaps); the DOM is signed by the Go API.
             S3_HOST = cfg.s3.endpoint;
             S3_KEY = cfg.s3.accessKey;
             S3_DISABLE_SSL_VERIFY = lib.boolToString cfg.s3.disableSslVerify;
@@ -1206,8 +1195,7 @@ in
             HEALTH_HOST = cfg.healthHost;
             ASSIST_URL = assistUrlEnv;
             ASSIST_KEY = cfg.assistKey;
-            # chalice formats this with SMR_KEY -> http://host:port/smr/sourcemaps.
-            # The {} is Python str.format, passed through.
+            # chalice formats this with SMR_KEY -> http://host:port/smr/sourcemaps. The {} is Python str.format, passed through.
             sourcemaps_reader = "http://${cfg.listenAddress}:${toString cfg.sourcemapreader.port}/{}/sourcemaps";
           }
           // smtpEnv;
@@ -1221,8 +1209,7 @@ in
           '';
         };
 
-        # Live sessions / co-browsing (Node + socket.io). Proxy /ws-assist/ (strip ->
-        # /socket) and /assist/. WebRTC media is peer-to-peer.
+        # Live sessions / co-browsing (Node + socket.io). Proxy /ws-assist/ (strip -> /socket) and /assist/. WebRTC media is peer-to-peer.
         openreplay-assist = mkService {
           name = "assist";
           description = "OpenReplay assist server (live sessions / co-browsing)";
@@ -1264,8 +1251,7 @@ in
           '';
         };
 
-        # Notification scheduler (chalice codebase, APScheduler; no HTTP surface).
-        # CH_POOL=false / ASSIST_KEY=ignore match upstream's entrypoint.
+        # Notification scheduler (chalice codebase, APScheduler; no HTTP surface). CH_POOL=false / ASSIST_KEY=ignore match upstream's entrypoint.
         openreplay-alerts = mkService {
           name = "alerts";
           description = "OpenReplay alerts scheduler";

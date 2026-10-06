@@ -1,5 +1,4 @@
-# OpenReplay's "assist": Node + socket.io signalling for live sessions. WebRTC media
-# is peer-to-peer; this only brokers it. No build step.
+# OpenReplay's "assist": Node + socket.io signalling for live sessions. WebRTC media is peer-to-peer; this only brokers it. No build step.
 {
   lib,
   buildNpmPackage,

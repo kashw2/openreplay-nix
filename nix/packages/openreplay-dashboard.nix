@@ -16,8 +16,7 @@ stdenv.mkDerivation {
 
   offlineCache = yarn-berry_4.fetchYarnBerryDeps {
     inherit src;
-    # Platform-specific optional deps (darwin/win/musl) lack a checksum in the v8
-    # lockfile; regenerate with: yarn-berry_4.yarn-berry-fetcher missing-hashes frontend/yarn.lock
+    # Platform-specific optional deps (darwin/win/musl) lack a checksum in the v8 lockfile; regenerate with: yarn-berry_4.yarn-berry-fetcher missing-hashes frontend/yarn.lock
     missingHashes = ./openreplay-dashboard-missing-hashes.json;
     hash = "sha256-JkVJDmqWPlXXT2S2Ct9Dmp2pKhnMc4vjqo4/3xOdy2E=";
   };

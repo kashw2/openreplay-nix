@@ -72,8 +72,7 @@ pkgs.testers.runNixOSTest {
           };
         };
 
-      # Secrets are file paths only. systemd reads LoadCredential sources as root,
-      # so /etc files are fine here.
+      # Secrets are file paths only. systemd reads LoadCredential sources as root, so /etc files are fine here.
       environment.etc =
         lib.mapAttrs' (name: value: lib.nameValuePair "openreplay-secrets/${name}" { text = value; })
           {

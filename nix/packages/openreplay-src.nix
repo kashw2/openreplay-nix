@@ -1,6 +1,5 @@
-# Single source of truth for the pinned OpenReplay checkout: every package builds from
-# this. Pinned by `rev` (upstream only tags releases), re-exposed via passthru so
-# nix-update can rewrite it. Update everything with:
+# Single source of truth for the pinned OpenReplay checkout: every package builds from this. Pinned by `rev` (upstream only tags releases), re-exposed via passthru so nix-update
+# can rewrite it. Update everything with:
 #
 #   nix-update --flake openreplay-src --use-update-script
 {
@@ -25,8 +24,7 @@ src.overrideAttrs (old: {
   passthru = (old.passthru or { }) // {
     inherit version src;
 
-    # Bump the pin, then refresh each consumer's dependency hash (nix-update can't
-    # reach them). The dashboard's missing-hashes.json isn't a hash it knows.
+    # Bump the pin, then refresh each consumer's dependency hash (nix-update can't reach them). The dashboard's missing-hashes.json isn't a hash it knows.
     updateScript = lib.getExe (writeShellApplication {
       name = "openreplay-update";
       runtimeInputs = [

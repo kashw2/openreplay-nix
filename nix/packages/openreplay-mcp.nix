@@ -1,7 +1,5 @@
-# OpenReplay's stdio MCP server (`mcp_app`). The server bundle is always built and
-# self-contained. The interactive UI (dist/index.html) is gated on `withPlayer`:
-# null (default) is server-only — tools still return text, MCP-UI hosts just have no
-# panel; passing <openreplay-player> also builds the UI (vite inlines the player).
+# OpenReplay's stdio MCP server (`mcp_app`). The server bundle is always built and self-contained. The interactive UI (dist/index.html) is gated on `withPlayer`: null (default) is
+# server-only — tools still return text, MCP-UI hosts just have no panel; passing <openreplay-player> also builds the UI (vite inlines the player).
 {
   lib,
   stdenv,

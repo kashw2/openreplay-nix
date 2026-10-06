@@ -1,6 +1,5 @@
-# OpenReplay's alerts scheduler: the openreplay-chalice codebase under a different
-# uvicorn entrypoint (app_alerts:app, an APScheduler loop with no HTTP surface).
-# Runs from the pinned source's api/, copied to a writable workdir on each start.
+# OpenReplay's alerts scheduler: the openreplay-chalice codebase under a different uvicorn entrypoint (app_alerts:app, an APScheduler loop with no HTTP surface). Runs from the
+# pinned source's api/, copied to a writable workdir on each start.
 {
   lib,
   writeShellApplication,

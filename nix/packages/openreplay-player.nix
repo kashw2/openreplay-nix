@@ -1,5 +1,4 @@
-# `@openreplay/player`: session-replay engine, consumed from source by bundlers.
-# Publishes src + node_modules so a consumer can resolve its bare imports.
+# `@openreplay/player`: session-replay engine, consumed from source by bundlers. Publishes src + node_modules so a consumer can resolve its bare imports.
 {
   lib,
   stdenv,
