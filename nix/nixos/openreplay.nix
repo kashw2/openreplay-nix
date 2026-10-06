@@ -8,13 +8,10 @@
 let
   cfg = config.services.openreplay;
 
-  # ClickHouse's Go/Python clients scan the tz database at startup; NixOS has no
-  # /usr/share/zoneinfo, so without TZDIR pointed at nixpkgs tzdata they fail
-  # with "Could not determine local time zone".
+  # ClickHouse clients need TZDIR: NixOS has no /usr/share/zoneinfo.
   tzDir = "${pkgs.tzdata}/share/zoneinfo";
 
-  # Redis-Streams "topics" (OSS queues through Redis, not Kafka) — upstream
-  # Dockerfile defaults, marked required by the config structs so passed explicitly.
+  # Redis-Streams topics (no Kafka in OSS); upstream defaults, required by the structs.
   topics = {
     TOPIC_RAW_WEB = "raw";
     TOPIC_RAW_IOS = "raw-ios";
@@ -40,17 +37,13 @@ let
     USE_S3_TAGS = "false";
   };
 
-  # APIs build the live-session URL as sprintf(ASSIST_URL, ASSIST_KEY), so the %s
-  # placeholder is required (matches upstream chalice/api env).
+  # APIs build the URL as sprintf(ASSIST_URL, ASSIST_KEY), so the %s is required.
   assistUrl = "http://${cfg.listenAddress}:${toString cfg.assist.port}/assist/%s";
-  # systemd expands %-specifiers in Environment= values, eating the %s above;
-  # double it so the process receives a literal %s.
+  # systemd eats %-specifiers in Environment=, so double it to pass a literal %s.
   assistUrlEnv = lib.replaceStrings [ "%" ] [ "%%" ] assistUrl;
 
-  # SMTP env shared by the two services that send mail (the Python dashboard API
-  # and the alerts scheduler). Read via python-decouple. A null host leaves email
-  # unconfigured (no EMAIL_* emitted, so upstream's empty env.default disables
-  # sending). EMAIL_PASSWORD is a secret, carried through allSecrets/LoadCredential.
+  # Shared by the chalice API and the alerts scheduler (python-decouple).
+  # A null host emits no EMAIL_*, which disables sending upstream.
   smtpEnv = lib.optionalAttrs (cfg.smtp.host != null) {
     EMAIL_FROM = cfg.smtp.from;
     EMAIL_HOST = cfg.smtp.host;
@@ -62,13 +55,8 @@ let
     EMAIL_SSL_KEY = lib.optionalString (cfg.smtp.sslKey != null) cfg.smtp.sslKey;
   };
 
-  # Secret handling: every secret is provisioned as a *path to a file* holding it
-  # (sops-nix's /run/secrets/…, agenix, systemd-creds, a hand-managed file). Literal
-  # values are deliberately unsupported — they would be serialised into the
-  # world-readable Nix store. Paths load via systemd LoadCredential and are exported
-  # into the process from $CREDENTIALS_DIRECTORY at start, so the secret never
-  # reaches the store or the unit. DSN passwords (PG/Redis/CH) are assembled at
-  # runtime from these vars.
+  # Every secret is a path to a file holding it (sops-nix, agenix, systemd-creds):
+  # loaded via LoadCredential, exported from $CREDENTIALS_DIRECTORY, never in the store.
   allSecrets = {
     OR_PG_PASSWORD = cfg.postgres.passwordFile;
     OR_REDIS_PASSWORD = cfg.redis.passwordFile;
@@ -86,9 +74,7 @@ let
   # LoadCredential id for an env var (JWT_SECRET -> jwt-secret).
   credName = env: lib.toLower (lib.replaceStrings [ "_" ] [ "-" ] env);
 
-  # Resolve the secret env names a process needs into LoadCredential entries and the
-  # shell preamble that exports them out of the credentials directory. A secret left
-  # unset (null path) is simply absent from the process env.
+  # LoadCredential entries + the preamble exporting them. Unset (null) secrets are absent.
   resolveSecrets =
     needed:
     let
@@ -96,9 +82,7 @@ let
     in
     {
       loadCredential = lib.mapAttrsToList (n: v: "${credName n}:${v}") files;
-      # Assign then export separately: a combined `export x="$(...)"` masks the
-      # subshell's exit status, which shellcheck (run over every writeShellApplication)
-      # rejects as SC2155.
+      # Assign then export: `export x="$(...)"` masks the exit status (SC2155).
       preamble = lib.concatStringsSep "\n" (
         lib.mapAttrsToList (n: _: ''
           ${n}="$(cat "$CREDENTIALS_DIRECTORY/${credName n}")"
@@ -107,9 +91,7 @@ let
       );
     };
 
-  # Runtime DSN assembly: read the OR_*_PASSWORD shell vars (exported from the
-  # credentials directory) and build the connection strings, so the password is
-  # never serialised into the unit/store.
+  # Build DSNs at runtime from the exported OR_*_PASSWORD vars, never in the unit.
   dsnPreamble =
     {
       clickhouse ? false,
@@ -144,8 +126,7 @@ let
     ]
     ++ lib.optional cfg.initBuckets "openreplay-buckets.service";
 
-  # Every Go backend service exposes a service/health port and a /metrics + /health
-  # port. Kept as one table so the option defaults and the units below cannot drift.
+  # Ports for the Go services; feeds both the options and the units so they can't drift.
   # `desc` completes "… port." in the option description.
   goServicePorts = {
     http = {
@@ -178,8 +159,7 @@ let
       metricsPort = 8125;
       desc = "assets service";
     };
-    # Go "v2" API (session search etc.); also shares the backend `package`. Named
-    # `api` to match upstream (backend/cmd/api, SERVICE_NAME=api).
+    # Upstream name (backend/cmd/api, SERVICE_NAME=api); shares the backend package.
     api = {
       port = 8106;
       metricsPort = 8131;
@@ -212,10 +192,8 @@ let
     };
   };
 
-  # Wrap a service's shell body: export its secrets out of the credentials directory,
-  # then run the body. Building the wrapper here is what lets a service declare its
-  # secrets once (as `secretsNeeded`) rather than once for the unit and again for the
-  # script that reads them.
+  # Export the service's secrets, then run its body. Built here so a service names
+  # its secrets once, in `secretsNeeded`.
   mkScript =
     name: secretsNeeded: body:
     pkgs.writeShellApplication {
@@ -259,15 +237,13 @@ let
         Restart = "on-failure";
         RestartSec = 5;
         ExecStart = lib.getExe (mkScript name secretsNeeded script);
-        # An empty list renders no Environment/LoadCredential lines at all, so a
-        # service with no configured secrets needs no special case here.
+        # An empty list renders no unit lines, so no special case is needed.
         LoadCredential = sec.loadCredential;
       }
       // extraServiceConfig;
     };
 
-  # A Go backend worker: assemble DSNs + secrets, ensure the FS scratch dir
-  # exists, then exec the binary. Ports come from goServicePorts.
+  # Go worker: DSNs + secrets, ensure the FS scratch dir, exec the binary.
   goService =
     {
       name,
@@ -299,8 +275,7 @@ let
       '';
     };
 
-  # The init one-shots share a unit shape: ordered after the network, run once and
-  # stay "active", as the service user, with their secrets exported up front.
+  # Shared shape for the init one-shots: after network, run once, as the service user.
   mkOneShot =
     {
       description,
@@ -333,8 +308,7 @@ let
       // extraServiceConfig;
     };
 
-  # clickhouse-client connection args, carrying the password only when one is
-  # configured. Shared by the schema and retention one-shots.
+  # clickhouse-client args, with the password only when one is configured.
   chClientArgs = ''
     args=(--host ${cfg.clickhouse.host} --port ${toString cfg.clickhouse.tcpPort} --user ${cfg.clickhouse.username})
     if [ -n "''${OR_CH_PASSWORD:-}" ]; then
@@ -342,8 +316,7 @@ let
     fi
   '';
 
-  # Options for a secret provisioned as the path to a file holding it. Passing
-  # `nullMeans` makes the option optional and documents what leaving it unset does.
+  # Secret option: a path to the file holding it. A non-null `nullMeans` makes it optional.
   secretFileOpt =
     slug: desc: nullMeans:
     lib.mkOption (
@@ -367,10 +340,7 @@ let
     );
 in
 {
-  # Literal secrets are no longer accepted: every secret is provisioned as a path to
-  # a file holding it, so sops-nix (/run/secrets/…), agenix or systemd-creds owns the
-  # material and it never lands in the world-readable Nix store. Fail loudly on the
-  # old options rather than silently ignoring a configured secret.
+  # Literal secrets are gone (they landed in the store). Fail loudly on the old options.
   imports =
     lib.mapAttrsToList
       (
@@ -480,8 +450,7 @@ in
       '';
     };
 
-    # SMTP used by the dashboard API (invites, password resets) and the alerts
-    # scheduler (alert/weekly-report emails). Leave `host` empty to disable email.
+    # SMTP for the dashboard API and the alerts scheduler. Null host disables email.
     smtp = {
       host = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
@@ -774,10 +743,7 @@ in
       };
     };
 
-    # Application secrets. Each is a path to a file holding the value — point these
-    # at sops-nix (`config.sops.secrets.<name>.path`, i.e. /run/secrets/…), agenix,
-    # or any other runtime-materialised file. They are required: OpenReplay will not
-    # sign or verify tokens without them.
+    # Paths to the files holding each secret (sops-nix, agenix, …). All required.
     secrets = {
       tokenSecretFile = secretFileOpt "token-secret" "tracker token secret" null;
       jwtSecretFile = secretFileOpt "jwt-secret" "dashboard JWT secret" null;
@@ -810,8 +776,7 @@ in
       };
     };
   }
-  # Port options for the Go backend services, generated from the one table that also
-  # feeds their units.
+  # Port options for the Go services, from the table that also feeds their units.
   // lib.mapAttrs (name: p: {
     port = lib.mkOption {
       type = lib.types.port;
@@ -885,8 +850,7 @@ in
           extraServiceConfig.Environment = [ "TZDIR=${tzDir}" ];
           script = ''
             ${chClientArgs}
-            # The upstream create script isn't safe to re-run; apply it only once,
-            # keyed on the `experimental` database it creates.
+            # Not safe to re-run; key on the `experimental` database it creates.
             if [ "$(clickhouse-client "''${args[@]}" --query "EXISTS DATABASE experimental")" = "1" ]; then
               echo "openreplay: clickhouse schema already present, skipping"
             else
@@ -896,10 +860,8 @@ in
         };
       })
 
-      # one-shot: ClickHouse data-retention TTLs. OSS keeps session/event data
-      # indefinitely; a configured window applies a time-based TTL so ClickHouse
-      # drops older rows. MODIFY TTL replaces the table's TTL — idempotent, reconciled
-      # each rebuild. Object-store blob expiry is in the buckets one-shot.
+      # one-shot: ClickHouse retention TTLs. OSS keeps session data forever; MODIFY TTL
+      # is idempotent. Blob expiry is in the buckets one-shot.
       (lib.mkIf (cfg.retention.days != null && cfg.initSchema) {
         openreplay-retention = mkOneShot {
           description = "OpenReplay ClickHouse data-retention TTLs";
@@ -914,9 +876,8 @@ in
             in
             ''
               ${chClientArgs}
-              # Sessions expire on their `datetime`; events expire on `created_at`
-              # (a DateTime64, cast to DateTime) while preserving the upstream
-              # soft-delete purge as a second TTL clause.
+              # Sessions expire on `datetime`, events on `created_at`; keep upstream's
+              # soft-delete purge as a second clause.
               clickhouse-client "''${args[@]}" --query \
                 "ALTER TABLE experimental.sessions MODIFY TTL datetime + INTERVAL ${d} DAY"
               clickhouse-client "''${args[@]}" --query \
@@ -932,9 +893,7 @@ in
           description = "OpenReplay object-storage bucket init";
           secretsNeeded = [ "AWS_SECRET_ACCESS_KEY" ];
           path = [ pkgs.minio-client ];
-          # mc writes its config under $HOME (the openreplay user's home is the state
-          # dir, which this one-shot does not own). Give it a private, writable,
-          # ephemeral config dir instead.
+          # mc writes its config under $HOME, which this one-shot does not own.
           extraServiceConfig.RuntimeDirectory = "openreplay-buckets";
           script =
             let
@@ -951,9 +910,7 @@ in
                   ];
                 }
               );
-              # Replay-blob buckets that a retention window should expire (only
-              # those actually being created). `mc ilm import` replaces the whole
-              # lifecycle config, so re-running reconciles rather than duplicates.
+              # Replay buckets to expire. `mc ilm import` replaces the config, so it reconciles.
               retentionBuckets = builtins.filter (b: builtins.elem b cfg.s3.buckets) [
                 "mobs"
                 "sessions-assets"
@@ -980,9 +937,7 @@ in
               done
               mc anonymous set-json ${assetsPolicy} local/sessions-assets
               ${lib.optionalString (cfg.retention.days != null) ''
-                # Expire replay blobs after the retention window. Best-effort: warn
-                # (don't fail bucket init) if the object store can't store lifecycle
-                # rules — the ClickHouse TTL still bounds discoverable session data.
+                # Best-effort: some backends reject lifecycle rules; the ClickHouse TTL still applies.
                 for b in ${lib.concatStringsSep " " retentionBuckets}; do
                   mc ilm import "local/$b" < ${retentionLifecycle} \
                     || echo "openreplay: warning: lifecycle expiry not applied to $b (S3 backend may not support lifecycle rules)" >&2
@@ -1090,9 +1045,7 @@ in
           };
         };
 
-        # Derives events/issues (clicks, inputs, dead clicks, …) from the raw
-        # message stream. A pure Redis-Streams consumer (no TCP listener beyond
-        # its health handler), like sink/db/ender/storage.
+        # Derives events/issues (clicks, dead clicks, …) from the raw stream. Pure consumer.
         openreplay-heuristics = goService {
           name = "heuristics";
           secretsNeeded = [ "OR_REDIS_PASSWORD" ];
@@ -1101,13 +1054,8 @@ in
           };
         };
 
-        # Archives per-session <canvas> snapshots for replay. The web tracker POSTs
-        # canvas frames to /v1/web/images (route /ingest/v1/web/images here), which
-        # the service produces to the canvas-image stream and then consumes, along
-        # with the canvas-trigger stream (session-end from ender), buffering under
-        # FS_DIR/CANVAS_DIR before packing+uploading to the mobs bucket. Both topics
-        # are already in `topics` and ender emits the trigger. FS_DIR is the shared
-        # blobs dir (the service manages its own canvas/ subtree).
+        # Per-session <canvas> snapshots. Tracker POSTs to /v1/web/images; also consumes
+        # the canvas-trigger stream from ender. Buffers under FS_DIR/CANVAS_DIR -> mobs.
         openreplay-canvases = goService {
           name = "canvases";
           objectStore = true;
@@ -1125,11 +1073,8 @@ in
           };
         };
 
-        # Mobile (iOS/Android) replay screenshots. The SDK POSTs batches to
-        # /v1/mobile/images (route /ingest/v1/mobile/images here, stripping /ingest);
-        # the service also consumes the raw-images stream and uploads packed
-        # screenshots to the mobs bucket. FS_DIR is the shared blobs dir
-        # (screenshots/ subtree via SCREENSHOTS_DIR).
+        # Mobile replay screenshots. SDK POSTs to /v1/mobile/images; also consumes
+        # raw-images. Buffers under FS_DIR/SCREENSHOTS_DIR -> mobs.
         openreplay-images = goService {
           name = "images";
           objectStore = true;
@@ -1147,11 +1092,8 @@ in
           };
         };
 
-        # OpenReplay Spot: the browser-extension screen recorder (bug-report videos),
-        # distinct from session replay. Serves an authenticated REST API (/v1/spots,
-        # /spots/…) — proxy /spot/ here, stripping the prefix (serves at NoPrefix).
-        # Auth uses the dashboard JWT + the Spot JWT; those, the spots.* schema, and
-        # the spots bucket already exist. FS_DIR is the shared blobs dir (SPOTS_DIR).
+        # Spot: browser-extension screen recorder, not session replay. REST API at
+        # /v1/spots; proxy /spot/ stripping the prefix. Dashboard JWT + Spot JWT.
         openreplay-spot = goService {
           name = "spot";
           objectStore = true;
@@ -1169,8 +1111,7 @@ in
           };
         };
 
-        # HTTP service for third-party log integrations (Sentry, Datadog, …);
-        # proxied at /integrations. Binds a TCP port; touches PG, Redis, object store.
+        # Third-party log integrations (Sentry, Datadog, …); proxied at /integrations.
         openreplay-integrations = goService {
           name = "integrations";
           objectStore = true;
@@ -1211,9 +1152,8 @@ in
               METRICS_PORT = toString cfg.api.metricsPort;
               JWT_ISSUER = "OpenReplay-oss";
               BUCKET_NAME = "mobs";
-              # Presigns the replay DOM ("mob") URLs the player fetches from the
-              # browser, so it must sign against the browser-reachable origin, not
-              # the loopback `endpoint` other workers use. Overrides objectStorage's.
+              # Presigns the replay DOM for the browser, so it must sign against a
+              # browser-reachable origin, not the loopback `endpoint`.
               AWS_ENDPOINT = cfg.s3.publicEndpoint;
               FS_DIR = "${cfg.stateDir}/api";
               # Live sessions: query the assist server at sprintf(ASSIST_URL, ASSIST_KEY).
@@ -1252,11 +1192,8 @@ in
             ch_port = toString cfg.clickhouse.tcpPort;
             ch_port_http = toString cfg.clickhouse.httpPort;
             ch_user = cfg.clickhouse.username;
-            # Kept internal: chalice presigns via boto3, whose default addressing is
-            # virtual-hosted (https://<bucket>.host/…), which the gateway's path-based
-            # bucket routing doesn't serve. It only presigns supplementary assets
-            # (canvas frames, sourcemaps), not the replay DOM, so internal is fine;
-            # the browser-facing DOM presigning is on the Go API (path style).
+            # Internal: boto3 presigns virtual-hosted URLs the gateway can't route. Only
+            # supplementary assets (canvas frames, sourcemaps); the DOM is signed by the Go API.
             S3_HOST = cfg.s3.endpoint;
             S3_KEY = cfg.s3.accessKey;
             S3_DISABLE_SSL_VERIFY = lib.boolToString cfg.s3.disableSslVerify;
@@ -1269,9 +1206,8 @@ in
             HEALTH_HOST = cfg.healthHost;
             ASSIST_URL = assistUrlEnv;
             ASSIST_KEY = cfg.assistKey;
-            # Symbolication: chalice formats this with SMR_KEY (default "smr") ->
-            # http://host:port/smr/sourcemaps, matching the sourcemapreader route.
-            # The literal {} is Python str.format (not shell/systemd), passed through.
+            # chalice formats this with SMR_KEY -> http://host:port/smr/sourcemaps.
+            # The {} is Python str.format, passed through.
             sourcemaps_reader = "http://${cfg.listenAddress}:${toString cfg.sourcemapreader.port}/{}/sourcemaps";
           }
           // smtpEnv;
@@ -1285,9 +1221,8 @@ in
           '';
         };
 
-        # assist: live sessions / co-browsing (Node + socket.io). Proxy /ws-assist/
-        # (socket.io WebSocket upgrade, strip prefix -> /socket) and
-        # /assist/ (REST). WebRTC media is peer-to-peer between agent and visitor.
+        # Live sessions / co-browsing (Node + socket.io). Proxy /ws-assist/ (strip ->
+        # /socket) and /assist/. WebRTC media is peer-to-peer.
         openreplay-assist = mkService {
           name = "assist";
           description = "OpenReplay assist server (live sessions / co-browsing)";
@@ -1306,9 +1241,7 @@ in
           script = "exec ${lib.getExe cfg.assist.package}";
         };
 
-        # sourcemapreader: JS stack-trace symbolication (Node/Express). Called by the
-        # chalice API to map minified frames back to source via the
-        # sourcemaps bucket. Internal only — not fronted by the proxy.
+        # Stack-trace symbolication, called by the chalice API. Internal only.
         openreplay-sourcemapreader = mkService {
           name = "sourcemapreader";
           description = "OpenReplay sourcemapreader (stack-trace symbolication)";
@@ -1331,10 +1264,8 @@ in
           '';
         };
 
-        # alerts: notification scheduler (chalice codebase, uvicorn). Runs
-        # app_alerts:app — an APScheduler loop, no authenticated HTTP surface;
-        # shares the chalice Python env and DB config. CH_POOL=false /
-        # ASSIST_KEY=ignore match upstream's alerts entrypoint.
+        # Notification scheduler (chalice codebase, APScheduler; no HTTP surface).
+        # CH_POOL=false / ASSIST_KEY=ignore match upstream's entrypoint.
         openreplay-alerts = mkService {
           name = "alerts";
           description = "OpenReplay alerts scheduler";

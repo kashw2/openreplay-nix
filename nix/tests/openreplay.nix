@@ -72,9 +72,8 @@ pkgs.testers.runNixOSTest {
           };
         };
 
-      # The module takes secrets only as file paths (sops-nix's /run/secrets/…,
-      # agenix, …). Stage the test values as plain files; systemd reads
-      # LoadCredential sources as root before dropping privileges.
+      # Secrets are file paths only. systemd reads LoadCredential sources as root,
+      # so /etc files are fine here.
       environment.etc =
         lib.mapAttrs' (name: value: lib.nameValuePair "openreplay-secrets/${name}" { text = value; })
           {
@@ -182,8 +181,7 @@ pkgs.testers.runNixOSTest {
     with subtest("backend workers start"):
         for svc in ["http", "sink", "db", "ender", "storage", "assets", "heuristics", "canvases"]:
             machine.wait_for_unit(f"openreplay-{svc}.service")
-        # Only http/integrations bind a TCP port; the rest are pure Redis-Streams
-        # consumers (health handler, no ListenAndServe), so wait_for_unit suffices.
+        # Only http/integrations bind a TCP port; the rest are pure stream consumers.
         machine.wait_for_open_port(8100)
 
     with subtest("integrations service starts and listens"):
@@ -191,8 +189,7 @@ pkgs.testers.runNixOSTest {
         machine.wait_for_open_port(8110)
 
     with subtest("images service starts and listens"):
-        # Binds a TCP port for mobile screenshot uploads (/v1/mobile/images), unlike
-        # the pure Redis-Streams consumers above.
+        # Binds a TCP port for mobile screenshot uploads, unlike the consumers above.
         machine.wait_for_unit("openreplay-images.service")
         machine.wait_for_open_port(8115)
 

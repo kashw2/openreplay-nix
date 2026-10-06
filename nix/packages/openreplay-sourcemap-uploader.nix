@@ -1,8 +1,6 @@
-# `@openreplay/sourcemap-uploader` CLI — build-time companion to sourcemapreader.
-# App teams run it in CI to push JS sourcemaps to this instance's API (stored in
-# the `sourcemaps` bucket the reader consumes), so error stack traces symbolicate.
-# Packaged from the pinned checkout to track the server version. Plain Node CLI, no
-# build step.
+# `@openreplay/sourcemap-uploader` CLI: app teams run it in CI to push JS sourcemaps to
+# this instance's API (the `sourcemaps` bucket the reader consumes). Packaged from the
+# pinned checkout to track the server version. No build step.
 {
   lib,
   buildNpmPackage,
@@ -19,8 +17,8 @@ buildNpmPackage {
   # Plain Node CLI — the only script is `lint`; there is no build to run.
   dontNpmBuild = true;
 
-  # glob-promise@6 peer-deps glob@^8 but the package pins glob@^13; without this
-  # npm tries to resolve the peer from the offline registry and fails (ENOTCACHED).
+  # glob-promise@6 peer-deps glob@^8 but the package pins glob@^13; npm would try the
+  # offline registry and fail (ENOTCACHED).
   npmFlags = [ "--legacy-peer-deps" ];
 
   # The scoped name nests npm's string bin under bin/@openreplay/; add a flat

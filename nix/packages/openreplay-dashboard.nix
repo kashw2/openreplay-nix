@@ -41,8 +41,7 @@ stdenv.mkDerivation {
     cp -r --reflink=auto "$offlineCache"/cache/. .yarn/cache/
     chmod -R u+w .yarn/cache
     export YARN_CACHE_FOLDER="$PWD/.yarn/cache"
-    # skip-build: don't run postinstall scripts (cypress downloads a binary
-    # over the network; native modules use their prebuilt binaries at runtime).
+    # skip-build: cypress's postinstall downloads a binary; native modules ship prebuilt.
     node .yarn/releases/yarn-4.7.0.cjs install --immutable --mode=skip-build
     runHook postConfigure
   '';

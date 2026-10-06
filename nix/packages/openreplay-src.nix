@@ -1,7 +1,6 @@
-# Single source of truth for the pinned OpenReplay checkout: every package builds
-# from this. We pin an explicit `rev` (upstream only tags on releases, not per
-# commit). `.src` is re-exposed via passthru so nix-update can rewrite the pin.
-# Update everything with:
+# Single source of truth for the pinned OpenReplay checkout: every package builds from
+# this. Pinned by `rev` (upstream only tags releases), re-exposed via passthru so
+# nix-update can rewrite it. Update everything with:
 #
 #   nix-update --flake openreplay-src --use-update-script
 {
@@ -17,7 +16,7 @@ let
   src = fetchFromGitHub {
     owner = "openreplay";
     repo = "openreplay";
-    # Upstream doesn't release a new tag on every commit into main so builds cannot be idempotent using the `tag` attr
+    # Upstream only tags releases, so `tag` would not pin a reproducible build.
     rev = "3fce37d89113ca7a06c9d9d767ba8d274df94d26";
     hash = "sha256-eLZ6c9CxOPD9DQpG7dPstKdXZo/5sZhCvVQ+GVgLiX8=";
   };
@@ -26,9 +25,8 @@ src.overrideAttrs (old: {
   passthru = (old.passthru or { }) // {
     inherit version src;
 
-    # Bump the pin, then refresh each consumer's dependency hash against the new
-    # source (nix-update on this alone can't reach them). The dashboard's
-    # missing-hashes.json isn't a hash nix-update knows, so regenerate it first.
+    # Bump the pin, then refresh each consumer's dependency hash (nix-update can't
+    # reach them). The dashboard's missing-hashes.json isn't a hash it knows.
     updateScript = lib.getExe (writeShellApplication {
       name = "openreplay-update";
       runtimeInputs = [

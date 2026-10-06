@@ -1,6 +1,5 @@
-# `@openreplay/player`: session-replay engine, consumed from source by bundlers
-# (nothing to compile). Publishes src + installed node_modules so a consumer can
-# resolve the player's bare imports. Pass to openreplay-mcp's `withPlayer`.
+# `@openreplay/player`: session-replay engine, consumed from source by bundlers.
+# Publishes src + node_modules so a consumer can resolve its bare imports.
 {
   lib,
   stdenv,
