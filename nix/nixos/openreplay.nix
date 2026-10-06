@@ -62,79 +62,53 @@ let
     EMAIL_SSL_KEY = lib.optionalString (cfg.smtp.sslKey != null) cfg.smtp.sslKey;
   };
 
-  # Secret handling: each secret has a plain `xxx` and an `xxxFile` option. A *File
-  # loads via systemd LoadCredential (never hits the store); a plain value goes via
-  # Environment= (which does — the documented tradeoff). DSN passwords (PG/Redis/CH)
-  # are assembled at runtime from these vars.
+  # Secret handling: every secret is provisioned as a *path to a file* holding it
+  # (sops-nix's /run/secrets/…, agenix, systemd-creds, a hand-managed file). Literal
+  # values are deliberately unsupported — they would be serialised into the
+  # world-readable Nix store. Paths load via systemd LoadCredential and are exported
+  # into the process from $CREDENTIALS_DIRECTORY at start, so the secret never
+  # reaches the store or the unit. DSN passwords (PG/Redis/CH) are assembled at
+  # runtime from these vars.
   allSecrets = {
-    OR_PG_PASSWORD = {
-      plain = cfg.postgres.password;
-      file = cfg.postgres.passwordFile;
-    };
-    OR_REDIS_PASSWORD = {
-      plain = cfg.redis.password;
-      file = cfg.redis.passwordFile;
-    };
-    OR_CH_PASSWORD = {
-      plain = cfg.clickhouse.password;
-      file = cfg.clickhouse.passwordFile;
-    };
-    AWS_SECRET_ACCESS_KEY = {
-      plain = cfg.s3.secretKey;
-      file = cfg.s3.secretKeyFile;
-    };
-    TOKEN_SECRET = {
-      plain = cfg.secrets.tokenSecret;
-      file = cfg.secrets.tokenSecretFile;
-    };
-    JWT_SECRET = {
-      plain = cfg.secrets.jwtSecret;
-      file = cfg.secrets.jwtSecretFile;
-    };
-    JWT_REFRESH_SECRET = {
-      plain = cfg.secrets.jwtRefreshSecret;
-      file = cfg.secrets.jwtRefreshSecretFile;
-    };
-    JWT_SPOT_SECRET = {
-      plain = cfg.secrets.jwtSpotSecret;
-      file = cfg.secrets.jwtSpotSecretFile;
-    };
-    JWT_SPOT_REFRESH_SECRET = {
-      plain = cfg.secrets.jwtSpotRefreshSecret;
-      file = cfg.secrets.jwtSpotRefreshSecretFile;
-    };
-    ASSIST_JWT_SECRET = {
-      plain = cfg.secrets.assistJwtSecret;
-      file = cfg.secrets.assistJwtSecretFile;
-    };
-    EMAIL_PASSWORD = {
-      plain = cfg.smtp.password;
-      file = cfg.smtp.passwordFile;
-    };
+    OR_PG_PASSWORD = cfg.postgres.passwordFile;
+    OR_REDIS_PASSWORD = cfg.redis.passwordFile;
+    OR_CH_PASSWORD = cfg.clickhouse.passwordFile;
+    AWS_SECRET_ACCESS_KEY = cfg.s3.secretKeyFile;
+    TOKEN_SECRET = cfg.secrets.tokenSecretFile;
+    JWT_SECRET = cfg.secrets.jwtSecretFile;
+    JWT_REFRESH_SECRET = cfg.secrets.jwtRefreshSecretFile;
+    JWT_SPOT_SECRET = cfg.secrets.jwtSpotSecretFile;
+    JWT_SPOT_REFRESH_SECRET = cfg.secrets.jwtSpotRefreshSecretFile;
+    ASSIST_JWT_SECRET = cfg.secrets.assistJwtSecretFile;
+    EMAIL_PASSWORD = cfg.smtp.passwordFile;
   };
 
   # LoadCredential id for an env var (JWT_SECRET -> jwt-secret).
   credName = env: lib.toLower (lib.replaceStrings [ "_" ] [ "-" ] env);
 
-  # Resolve the secret env names a process needs into LoadCredential entries, the
-  # shell preamble that exports the file-based ones, and plain Environment entries.
+  # Resolve the secret env names a process needs into LoadCredential entries and the
+  # shell preamble that exports them out of the credentials directory. A secret left
+  # unset (null path) is simply absent from the process env.
   resolveSecrets =
     needed:
     let
-      specs = lib.filterAttrs (n: _: builtins.elem n needed) allSecrets;
-      files = lib.filterAttrs (_: v: v.file != null) specs;
-      plains = lib.filterAttrs (_: v: v.file == null && v.plain != null) specs;
+      files = lib.filterAttrs (n: v: builtins.elem n needed && v != null) allSecrets;
     in
     {
-      loadCredential = lib.mapAttrsToList (n: v: "${credName n}:${v.file}") files;
+      loadCredential = lib.mapAttrsToList (n: v: "${credName n}:${v}") files;
+      # Assign then export separately: a combined `export x="$(...)"` masks the
+      # subshell's exit status, which shellcheck (run over every writeShellApplication)
+      # rejects as SC2155.
       preamble = lib.concatStringsSep "\n" (
-        lib.mapAttrsToList (n: _: ''export ${n}="$(cat "$CREDENTIALS_DIRECTORY/${credName n}")"'') files
+        lib.mapAttrsToList (n: _: ''
+          ${n}="$(cat "$CREDENTIALS_DIRECTORY/${credName n}")"
+          export ${n}
+        '') files
       );
-      environment = lib.mapAttrs (_: v: v.plain) plains;
     };
 
-  # Runtime DSN assembly: read the OR_*_PASSWORD shell vars (from a credential file
-  # or Environment) and build the connection strings, so a file-based password is
+  # Runtime DSN assembly: read the OR_*_PASSWORD shell vars (exported from the
+  # credentials directory) and build the connection strings, so the password is
   # never serialised into the unit/store.
   dsnPreamble =
     {
@@ -170,11 +144,95 @@ let
     ]
     ++ lib.optional cfg.initBuckets "openreplay-buckets.service";
 
-  # Build a systemd service for one process from a wrapped command.
+  # Every Go backend service exposes a service/health port and a /metrics + /health
+  # port. Kept as one table so the option defaults and the units below cannot drift.
+  # `desc` completes "… port." in the option description.
+  goServicePorts = {
+    http = {
+      port = 8100;
+      metricsPort = 8120;
+      desc = "Ingest (http) service";
+    };
+    sink = {
+      port = 8101;
+      metricsPort = 8121;
+      desc = "sink service health";
+    };
+    db = {
+      port = 8102;
+      metricsPort = 8122;
+      desc = "db service health";
+    };
+    ender = {
+      port = 8103;
+      metricsPort = 8132;
+      desc = "ender service health";
+    };
+    storage = {
+      port = 8104;
+      metricsPort = 8124;
+      desc = "storage service health";
+    };
+    assets = {
+      port = 8105;
+      metricsPort = 8125;
+      desc = "assets service";
+    };
+    # Go "v2" API (session search etc.); also shares the backend `package`. Named
+    # `api` to match upstream (backend/cmd/api, SERVICE_NAME=api).
+    api = {
+      port = 8106;
+      metricsPort = 8131;
+      desc = ''Go "v2" API (session search, served at /v2/api)'';
+    };
+    heuristics = {
+      port = 8109;
+      metricsPort = 8126;
+      desc = "heuristics service health";
+    };
+    integrations = {
+      port = 8110;
+      metricsPort = 8127;
+      desc = "integrations service HTTP (proxy /integrations here)";
+    };
+    canvases = {
+      port = 8114;
+      metricsPort = 8128;
+      desc = "canvases service (web canvas uploads at /v1/web/images)";
+    };
+    images = {
+      port = 8115;
+      metricsPort = 8129;
+      desc = "images service (mobile screenshot uploads at /v1/mobile/images)";
+    };
+    spot = {
+      port = 8116;
+      metricsPort = 8130;
+      desc = "spot service (Spot recorder REST API; proxy /spot here)";
+    };
+  };
+
+  # Wrap a service's shell body: export its secrets out of the credentials directory,
+  # then run the body. Building the wrapper here is what lets a service declare its
+  # secrets once (as `secretsNeeded`) rather than once for the unit and again for the
+  # script that reads them.
+  mkScript =
+    name: secretsNeeded: body:
+    pkgs.writeShellApplication {
+      name = "openreplay-${name}";
+      runtimeInputs = [ pkgs.coreutils ];
+      text = ''
+        ${(resolveSecrets secretsNeeded).preamble}
+        ${body}
+      '';
+    };
+
+  # Build a systemd service for one process from its shell body.
   mkService =
     {
+      name,
       description,
-      command,
+      script,
       environment ? { },
       secretsNeeded ? [ ],
       extraServiceConfig ? { },
@@ -192,8 +250,7 @@ let
         TZ = "UTC";
         TZDIR = tzDir;
       }
-      // environment
-      // sec.environment;
+      // environment;
       serviceConfig = {
         User = cfg.user;
         Group = cfg.group;
@@ -201,32 +258,32 @@ let
         WorkingDirectory = cfg.stateDir;
         Restart = "on-failure";
         RestartSec = 5;
-        ExecStart = lib.getExe command;
+        ExecStart = lib.getExe (mkScript name secretsNeeded script);
+        # An empty list renders no Environment/LoadCredential lines at all, so a
+        # service with no configured secrets needs no special case here.
+        LoadCredential = sec.loadCredential;
       }
-      // lib.optionalAttrs (sec.loadCredential != [ ]) { LoadCredential = sec.loadCredential; }
       // extraServiceConfig;
     };
 
   # A Go backend worker: assemble DSNs + secrets, ensure the FS scratch dir
-  # exists, then exec the binary.
+  # exists, then exec the binary. Ports come from goServicePorts.
   goService =
     {
       name,
-      port,
-      metricsPort,
       environment ? { },
       secretsNeeded ? [ ],
       clickhouse ? false,
       objectStore ? false,
     }:
     mkService {
+      inherit name secretsNeeded;
       description = "OpenReplay ${name} service";
-      inherit secretsNeeded;
       environment = {
         SERVICE_NAME = name;
         HTTP_HOST = cfg.listenAddress;
-        HTTP_PORT = toString port;
-        METRICS_PORT = toString metricsPort;
+        HTTP_PORT = toString cfg.${name}.port;
+        METRICS_PORT = toString cfg.${name}.metricsPort;
         LOG_QUEUE_STATS_INTERVAL_SEC = "60";
         REDIS_STREAMS_MAX_LEN = "10000";
         HOSTNAME = "openreplay-${name}";
@@ -234,20 +291,110 @@ let
       // topics
       // lib.optionalAttrs objectStore objectStorage
       // environment;
-      command = pkgs.writeShellApplication {
-        name = "openreplay-${name}";
-        runtimeInputs = [ pkgs.coreutils ];
-        text = ''
-          ${(resolveSecrets secretsNeeded).preamble}
-          ${dsnPreamble { inherit clickhouse; }}
-          [ -n "''${FS_DIR:-}" ] && mkdir -p "$FS_DIR" || true
-          # Named binary inside the Go backend package (cmd/http -> "http").
-          exec ${lib.getExe' cfg.package name}
-        '';
-      };
+      script = ''
+        ${dsnPreamble { inherit clickhouse; }}
+        [ -n "''${FS_DIR:-}" ] && mkdir -p "$FS_DIR" || true
+        # Named binary inside the Go backend package (cmd/http -> "http").
+        exec ${lib.getExe' cfg.package name}
+      '';
     };
+
+  # The init one-shots share a unit shape: ordered after the network, run once and
+  # stay "active", as the service user, with their secrets exported up front.
+  mkOneShot =
+    {
+      description,
+      script,
+      secretsNeeded ? [ ],
+      path ? [ ],
+      after ? [ ],
+      requires ? [ ],
+      extraServiceConfig ? { },
+    }:
+    let
+      sec = resolveSecrets secretsNeeded;
+    in
+    {
+      inherit description path requires;
+      after = [ "network-online.target" ] ++ after;
+      wants = [ "network-online.target" ];
+      wantedBy = [ "multi-user.target" ];
+      script = ''
+        ${sec.preamble}
+        ${script}
+      '';
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        User = cfg.user;
+        Group = cfg.group;
+        LoadCredential = sec.loadCredential;
+      }
+      // extraServiceConfig;
+    };
+
+  # clickhouse-client connection args, carrying the password only when one is
+  # configured. Shared by the schema and retention one-shots.
+  chClientArgs = ''
+    args=(--host ${cfg.clickhouse.host} --port ${toString cfg.clickhouse.tcpPort} --user ${cfg.clickhouse.username})
+    if [ -n "''${OR_CH_PASSWORD:-}" ]; then
+      args+=(--password "$OR_CH_PASSWORD")
+    fi
+  '';
+
+  # Options for a secret provisioned as the path to a file holding it. Passing
+  # `nullMeans` makes the option optional and documents what leaving it unset does.
+  secretFileOpt =
+    slug: desc: nullMeans:
+    lib.mkOption (
+      {
+        example = "/run/secrets/openreplay-${slug}";
+        description = ''
+          Path to a file holding the ${desc}. Read at service start via systemd
+          LoadCredential, so the secret never reaches the Nix store.
+          ${lib.optionalString (nullMeans != null) "Null ${nullMeans}."}
+        '';
+      }
+      // (
+        if nullMeans == null then
+          { type = lib.types.str; }
+        else
+          {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+          }
+      )
+    );
 in
 {
+  # Literal secrets are no longer accepted: every secret is provisioned as a path to
+  # a file holding it, so sops-nix (/run/secrets/…), agenix or systemd-creds owns the
+  # material and it never lands in the world-readable Nix store. Fail loudly on the
+  # old options rather than silently ignoring a configured secret.
+  imports =
+    lib.mapAttrsToList
+      (
+        old: new:
+        lib.mkRemovedOptionModule (lib.splitString "." "services.openreplay.${old}") ''
+          Secrets are only accepted as file paths. Set services.openreplay.${new} to a
+          path whose file holds the value — e.g. config.sops.secrets.<name>.path, or any
+          other file materialised at runtime under /run/secrets.
+        ''
+      )
+      {
+        "postgres.password" = "postgres.passwordFile";
+        "clickhouse.password" = "clickhouse.passwordFile";
+        "redis.password" = "redis.passwordFile";
+        "smtp.password" = "smtp.passwordFile";
+        "s3.secretKey" = "s3.secretKeyFile";
+        "secrets.tokenSecret" = "secrets.tokenSecretFile";
+        "secrets.jwtSecret" = "secrets.jwtSecretFile";
+        "secrets.jwtRefreshSecret" = "secrets.jwtRefreshSecretFile";
+        "secrets.jwtSpotSecret" = "secrets.jwtSpotSecretFile";
+        "secrets.jwtSpotRefreshSecret" = "secrets.jwtSpotRefreshSecretFile";
+        "secrets.assistJwtSecret" = "secrets.assistJwtSecretFile";
+      };
+
   options.services.openreplay = {
     enable = lib.mkEnableOption "the OpenReplay session-replay services";
 
@@ -352,16 +499,9 @@ in
         default = null;
         description = "SMTP login user (EMAIL_USER). Null skips authentication.";
       };
-      password = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "SMTP login password (EMAIL_PASSWORD; plain, ends up in the Nix store).";
-      };
-      passwordFile = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Runtime path to a file holding the SMTP password (kept out of the store).";
-      };
+      passwordFile =
+        secretFileOpt "smtp-password" "SMTP login password (EMAIL_PASSWORD)"
+          "skips password authentication";
       from = lib.mkOption {
         type = lib.types.str;
         default = "OpenReplay <do-not-reply@openreplay.com>";
@@ -426,154 +566,6 @@ in
           requires the S3 backend to honour bucket lifecycle rules (SeaweedFS
           and MinIO do). Both are idempotent and reconciled on every rebuild.
         '';
-      };
-    };
-
-    http = {
-      port = lib.mkOption {
-        type = lib.types.port;
-        default = 8100;
-        description = "Ingest (http) service port.";
-      };
-      metricsPort = lib.mkOption {
-        type = lib.types.port;
-        default = 8120;
-        description = "http service /metrics + /health port.";
-      };
-    };
-    sink = {
-      port = lib.mkOption {
-        type = lib.types.port;
-        default = 8101;
-        description = "sink service health port.";
-      };
-      metricsPort = lib.mkOption {
-        type = lib.types.port;
-        default = 8121;
-        description = "sink service /metrics + /health port.";
-      };
-    };
-    db = {
-      port = lib.mkOption {
-        type = lib.types.port;
-        default = 8102;
-        description = "db service health port.";
-      };
-      metricsPort = lib.mkOption {
-        type = lib.types.port;
-        default = 8122;
-        description = "db service /metrics + /health port.";
-      };
-    };
-    ender = {
-      port = lib.mkOption {
-        type = lib.types.port;
-        default = 8103;
-        description = "ender service health port.";
-      };
-      metricsPort = lib.mkOption {
-        type = lib.types.port;
-        default = 8132;
-        description = "ender service /metrics + /health port.";
-      };
-    };
-    storage = {
-      port = lib.mkOption {
-        type = lib.types.port;
-        default = 8104;
-        description = "storage service health port.";
-      };
-      metricsPort = lib.mkOption {
-        type = lib.types.port;
-        default = 8124;
-        description = "storage service /metrics + /health port.";
-      };
-    };
-    assets = {
-      port = lib.mkOption {
-        type = lib.types.port;
-        default = 8105;
-        description = "assets service port.";
-      };
-      metricsPort = lib.mkOption {
-        type = lib.types.port;
-        default = 8125;
-        description = "assets service /metrics + /health port.";
-      };
-    };
-    heuristics = {
-      port = lib.mkOption {
-        type = lib.types.port;
-        default = 8109;
-        description = "heuristics service health port.";
-      };
-      metricsPort = lib.mkOption {
-        type = lib.types.port;
-        default = 8126;
-        description = "heuristics service /metrics + /health port.";
-      };
-    };
-    integrations = {
-      port = lib.mkOption {
-        type = lib.types.port;
-        default = 8110;
-        description = "integrations service HTTP port (proxy /integrations here).";
-      };
-      metricsPort = lib.mkOption {
-        type = lib.types.port;
-        default = 8127;
-        description = "integrations service /metrics + /health port.";
-      };
-    };
-    canvases = {
-      port = lib.mkOption {
-        type = lib.types.port;
-        default = 8114;
-        description = "canvases service port (web canvas uploads at /v1/web/images).";
-      };
-      metricsPort = lib.mkOption {
-        type = lib.types.port;
-        default = 8128;
-        description = "canvases service /metrics + /health port.";
-      };
-    };
-    images = {
-      port = lib.mkOption {
-        type = lib.types.port;
-        default = 8115;
-        description = "images service port (mobile screenshot uploads at /v1/mobile/images).";
-      };
-      metricsPort = lib.mkOption {
-        type = lib.types.port;
-        default = 8129;
-        description = "images service /metrics + /health port.";
-      };
-    };
-    spot = {
-      port = lib.mkOption {
-        type = lib.types.port;
-        default = 8116;
-        description = "spot service port (Spot recorder REST API; proxy /spot here).";
-      };
-      metricsPort = lib.mkOption {
-        type = lib.types.port;
-        default = 8130;
-        description = "spot service /metrics + /health port.";
-      };
-    };
-
-    # Go "v2" API (session search etc.); also shares the backend `package`.
-    # Named `api` to match upstream (backend/cmd/api, SERVICE_NAME=api).
-    api = {
-      port = lib.mkOption {
-        type = lib.types.port;
-        default = 8106;
-        description = "Go \"v2\" API port (session search, served at /v2/api).";
-      };
-      metricsPort = lib.mkOption {
-        type = lib.types.port;
-        default = 8131;
-        description = "api service /metrics + /health port.";
       };
     };
 
@@ -664,16 +656,9 @@ in
         default = "openreplay";
         description = "Postgres database name.";
       };
-      password = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Postgres password (plain; ends up in the Nix store).";
-      };
-      passwordFile = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Runtime path to a file holding the Postgres password (kept out of the store).";
-      };
+      passwordFile =
+        secretFileOpt "postgres-password" "Postgres password"
+          "builds a password-less DSN (peer/trust auth)";
       createDatabase = lib.mkOption {
         type = lib.types.bool;
         default = false;
@@ -707,16 +692,9 @@ in
         default = "default";
         description = "ClickHouse user.";
       };
-      password = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "ClickHouse password (plain; ends up in the Nix store).";
-      };
-      passwordFile = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Runtime path to a file holding the ClickHouse password.";
-      };
+      passwordFile =
+        secretFileOpt "clickhouse-password" "ClickHouse password"
+          "builds a password-less DSN";
     };
 
     redis = {
@@ -730,16 +708,7 @@ in
         default = 6379;
         description = "Redis port.";
       };
-      password = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Redis password (plain; ends up in the Nix store).";
-      };
-      passwordFile = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Runtime path to a file holding the Redis password.";
-      };
+      passwordFile = secretFileOpt "redis-password" "Redis password" "builds a password-less DSN";
     };
 
     s3 = {
@@ -783,16 +752,7 @@ in
         type = lib.types.str;
         description = "S3 access key id (not secret).";
       };
-      secretKey = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "S3 secret access key (plain; ends up in the Nix store).";
-      };
-      secretKeyFile = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Runtime path to a file holding the S3 secret access key.";
-      };
+      secretKeyFile = secretFileOpt "s3-secret-key" "S3 secret access key (AWS_SECRET_ACCESS_KEY)" null;
       disableSslVerify = lib.mkOption {
         type = lib.types.bool;
         default = false;
@@ -814,35 +774,18 @@ in
       };
     };
 
-    secrets =
-      let
-        secretOpt = desc: {
-          plain = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-            description = "${desc} (plain; ends up in the Nix store).";
-          };
-          file = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-            description = "Runtime path to a file holding the ${desc} (kept out of the store).";
-          };
-        };
-      in
-      {
-        tokenSecret = (secretOpt "tracker token secret").plain;
-        tokenSecretFile = (secretOpt "tracker token secret").file;
-        jwtSecret = (secretOpt "dashboard JWT secret").plain;
-        jwtSecretFile = (secretOpt "dashboard JWT secret").file;
-        jwtRefreshSecret = (secretOpt "dashboard JWT refresh secret").plain;
-        jwtRefreshSecretFile = (secretOpt "dashboard JWT refresh secret").file;
-        jwtSpotSecret = (secretOpt "Spot JWT secret").plain;
-        jwtSpotSecretFile = (secretOpt "Spot JWT secret").file;
-        jwtSpotRefreshSecret = (secretOpt "Spot JWT refresh secret").plain;
-        jwtSpotRefreshSecretFile = (secretOpt "Spot JWT refresh secret").file;
-        assistJwtSecret = (secretOpt "assist JWT secret").plain;
-        assistJwtSecretFile = (secretOpt "assist JWT secret").file;
-      };
+    # Application secrets. Each is a path to a file holding the value — point these
+    # at sops-nix (`config.sops.secrets.<name>.path`, i.e. /run/secrets/…), agenix,
+    # or any other runtime-materialised file. They are required: OpenReplay will not
+    # sign or verify tokens without them.
+    secrets = {
+      tokenSecretFile = secretFileOpt "token-secret" "tracker token secret" null;
+      jwtSecretFile = secretFileOpt "jwt-secret" "dashboard JWT secret" null;
+      jwtRefreshSecretFile = secretFileOpt "jwt-refresh-secret" "dashboard JWT refresh secret" null;
+      jwtSpotSecretFile = secretFileOpt "jwt-spot-secret" "Spot JWT secret" null;
+      jwtSpotRefreshSecretFile = secretFileOpt "jwt-spot-refresh-secret" "Spot JWT refresh secret" null;
+      assistJwtSecretFile = secretFileOpt "assist-jwt-secret" "assist JWT secret" null;
+    };
 
     dataFiles = {
       uaparser = lib.mkOption {
@@ -866,7 +809,21 @@ in
         '';
       };
     };
-  };
+  }
+  # Port options for the Go backend services, generated from the one table that also
+  # feeds their units.
+  // lib.mapAttrs (name: p: {
+    port = lib.mkOption {
+      type = lib.types.port;
+      default = p.port;
+      description = "${p.desc} port.";
+    };
+    metricsPort = lib.mkOption {
+      type = lib.types.port;
+      default = p.metricsPort;
+      description = "${name} service /metrics + /health port.";
+    };
+  }) goServicePorts;
 
   config = lib.mkIf cfg.enable {
     assertions = [
@@ -879,16 +836,8 @@ in
         message = "services.openreplay.s3.accessKey must be set.";
       }
       {
-        assertion = !(cfg.postgres.password != null && cfg.postgres.passwordFile != null);
-        message = "Set only one of services.openreplay.postgres.password / passwordFile.";
-      }
-      {
-        assertion = !(cfg.s3.secretKey != null && cfg.s3.secretKeyFile != null);
-        message = "Set only one of services.openreplay.s3.secretKey / secretKeyFile.";
-      }
-      {
-        assertion = !(cfg.smtp.password != null && cfg.smtp.passwordFile != null);
-        message = "Set only one of services.openreplay.smtp.password / passwordFile.";
+        assertion = cfg.s3.secretKeyFile != "";
+        message = "services.openreplay.s3.secretKeyFile must be a path to a file holding the S3 secret access key.";
       }
     ];
 
@@ -904,88 +853,46 @@ in
     systemd.services = lib.mkMerge [
       # one-shot: Postgres extensions + schema
       (lib.mkIf cfg.initSchema {
-        openreplay-pg-init = {
+        openreplay-pg-init = mkOneShot {
           description = "OpenReplay Postgres schema init";
-          after = [ "network-online.target" ];
-          wants = [ "network-online.target" ];
-          wantedBy = [ "multi-user.target" ];
-          serviceConfig =
-            let
-              sec = resolveSecrets [ "OR_PG_PASSWORD" ];
-            in
-            {
-              Type = "oneshot";
-              RemainAfterExit = true;
-              User = cfg.user;
-              Group = cfg.group;
-            }
-            // lib.optionalAttrs (sec.loadCredential != [ ]) { LoadCredential = sec.loadCredential; }
-            // lib.optionalAttrs (sec.environment != { }) {
-              Environment = lib.mapAttrsToList (n: v: "${n}=${v}") sec.environment;
-            };
-          script =
-            let
-              sec = resolveSecrets [ "OR_PG_PASSWORD" ];
-            in
-            ''
-              ${sec.preamble}
-              export PGPASSWORD="''${OR_PG_PASSWORD:-}"
-              export PGHOST=${cfg.postgres.host} PGPORT=${toString cfg.postgres.port} PGUSER=${cfg.postgres.user}
-              ${lib.optionalString cfg.postgres.createDatabase ''
-                if ! psql -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='${cfg.postgres.database}'" | grep -q 1; then
-                  psql -d postgres -c "CREATE DATABASE ${cfg.postgres.database}"
-                fi
-              ''}
-              export PGDATABASE=${cfg.postgres.database}
-              psql -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm; CREATE EXTENSION IF NOT EXISTS pgcrypto;'
-              if [ -z "$(psql -tAc "SELECT to_regclass('public.tenants')")" ]; then
-                psql -v ON_ERROR_STOP=1 -f ${cfg.package.src}/scripts/schema/db/init_dbs/postgresql/init_schema.sql
-              else
-                echo "openreplay: postgres schema already present, skipping"
-              fi
-            '';
+          secretsNeeded = [ "OR_PG_PASSWORD" ];
           path = [ pkgs.postgresql ];
+          script = ''
+            export PGPASSWORD="''${OR_PG_PASSWORD:-}"
+            export PGHOST=${cfg.postgres.host} PGPORT=${toString cfg.postgres.port} PGUSER=${cfg.postgres.user}
+            ${lib.optionalString cfg.postgres.createDatabase ''
+              if ! psql -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='${cfg.postgres.database}'" | grep -q 1; then
+                psql -d postgres -c "CREATE DATABASE ${cfg.postgres.database}"
+              fi
+            ''}
+            export PGDATABASE=${cfg.postgres.database}
+            psql -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm; CREATE EXTENSION IF NOT EXISTS pgcrypto;'
+            if [ -z "$(psql -tAc "SELECT to_regclass('public.tenants')")" ]; then
+              psql -v ON_ERROR_STOP=1 -f ${cfg.package.src}/scripts/schema/db/init_dbs/postgresql/init_schema.sql
+            else
+              echo "openreplay: postgres schema already present, skipping"
+            fi
+          '';
         };
       })
 
       # one-shot: ClickHouse databases + schema
       (lib.mkIf cfg.initSchema {
-        openreplay-ch-init = {
+        openreplay-ch-init = mkOneShot {
           description = "OpenReplay ClickHouse schema init";
-          after = [ "network-online.target" ];
-          wants = [ "network-online.target" ];
-          wantedBy = [ "multi-user.target" ];
-          serviceConfig =
-            let
-              sec = resolveSecrets [ "OR_CH_PASSWORD" ];
-            in
-            {
-              Type = "oneshot";
-              RemainAfterExit = true;
-              User = cfg.user;
-              Group = cfg.group;
-              Environment = [ "TZDIR=${tzDir}" ] ++ lib.mapAttrsToList (n: v: "${n}=${v}") sec.environment;
-            }
-            // lib.optionalAttrs (sec.loadCredential != [ ]) { LoadCredential = sec.loadCredential; };
-          script =
-            let
-              sec = resolveSecrets [ "OR_CH_PASSWORD" ];
-            in
-            ''
-              ${sec.preamble}
-              args=(--host ${cfg.clickhouse.host} --port ${toString cfg.clickhouse.tcpPort} --user ${cfg.clickhouse.username})
-              if [ -n "''${OR_CH_PASSWORD:-}" ]; then
-                args+=(--password "$OR_CH_PASSWORD")
-              fi
-              # The upstream create script isn't safe to re-run; apply it only once,
-              # keyed on the `experimental` database it creates.
-              if [ "$(clickhouse-client "''${args[@]}" --query "EXISTS DATABASE experimental")" = "1" ]; then
-                echo "openreplay: clickhouse schema already present, skipping"
-              else
-                clickhouse-client "''${args[@]}" --multiquery < ${cfg.package.src}/scripts/schema/db/init_dbs/clickhouse/create/init_schema.sql
-              fi
-            '';
+          secretsNeeded = [ "OR_CH_PASSWORD" ];
           path = [ pkgs.clickhouse ];
+          extraServiceConfig.Environment = [ "TZDIR=${tzDir}" ];
+          script = ''
+            ${chClientArgs}
+            # The upstream create script isn't safe to re-run; apply it only once,
+            # keyed on the `experimental` database it creates.
+            if [ "$(clickhouse-client "''${args[@]}" --query "EXISTS DATABASE experimental")" = "1" ]; then
+              echo "openreplay: clickhouse schema already present, skipping"
+            else
+              clickhouse-client "''${args[@]}" --multiquery < ${cfg.package.src}/scripts/schema/db/init_dbs/clickhouse/create/init_schema.sql
+            fi
+          '';
         };
       })
 
@@ -994,38 +901,19 @@ in
       # drops older rows. MODIFY TTL replaces the table's TTL — idempotent, reconciled
       # each rebuild. Object-store blob expiry is in the buckets one-shot.
       (lib.mkIf (cfg.retention.days != null && cfg.initSchema) {
-        openreplay-retention = {
+        openreplay-retention = mkOneShot {
           description = "OpenReplay ClickHouse data-retention TTLs";
-          after = [
-            "network-online.target"
-            "openreplay-ch-init.service"
-          ];
-          wants = [ "network-online.target" ];
+          secretsNeeded = [ "OR_CH_PASSWORD" ];
+          path = [ pkgs.clickhouse ];
+          after = [ "openreplay-ch-init.service" ];
           requires = [ "openreplay-ch-init.service" ];
-          wantedBy = [ "multi-user.target" ];
-          serviceConfig =
-            let
-              sec = resolveSecrets [ "OR_CH_PASSWORD" ];
-            in
-            {
-              Type = "oneshot";
-              RemainAfterExit = true;
-              User = cfg.user;
-              Group = cfg.group;
-              Environment = [ "TZDIR=${tzDir}" ] ++ lib.mapAttrsToList (n: v: "${n}=${v}") sec.environment;
-            }
-            // lib.optionalAttrs (sec.loadCredential != [ ]) { LoadCredential = sec.loadCredential; };
+          extraServiceConfig.Environment = [ "TZDIR=${tzDir}" ];
           script =
             let
-              sec = resolveSecrets [ "OR_CH_PASSWORD" ];
               d = toString cfg.retention.days;
             in
             ''
-              ${sec.preamble}
-              args=(--host ${cfg.clickhouse.host} --port ${toString cfg.clickhouse.tcpPort} --user ${cfg.clickhouse.username})
-              if [ -n "''${OR_CH_PASSWORD:-}" ]; then
-                args+=(--password "$OR_CH_PASSWORD")
-              fi
+              ${chClientArgs}
               # Sessions expire on their `datetime`; events expire on `created_at`
               # (a DateTime64, cast to DateTime) while preserving the upstream
               # soft-delete purge as a second TTL clause.
@@ -1035,38 +923,21 @@ in
                 "ALTER TABLE product_analytics.events MODIFY TTL toDateTime(created_at) + INTERVAL ${d} DAY, _deleted_at + INTERVAL 1 DAY DELETE WHERE _deleted_at != '1970-01-01 00:00:00'"
               echo "openreplay: clickhouse retention TTL set to ${d} days"
             '';
-          path = [ pkgs.clickhouse ];
         };
       })
 
       # one-shot: object-storage buckets
       (lib.mkIf cfg.initBuckets {
-        openreplay-buckets = {
+        openreplay-buckets = mkOneShot {
           description = "OpenReplay object-storage bucket init";
-          after = [ "network-online.target" ];
-          wants = [ "network-online.target" ];
-          wantedBy = [ "multi-user.target" ];
-          serviceConfig =
-            let
-              sec = resolveSecrets [ "AWS_SECRET_ACCESS_KEY" ];
-            in
-            {
-              Type = "oneshot";
-              RemainAfterExit = true;
-              User = cfg.user;
-              Group = cfg.group;
-              # mc writes its config under $HOME (the openreplay user's home is
-              # the state dir, which this one-shot does not own). Give it a
-              # private, writable, ephemeral config dir instead.
-              RuntimeDirectory = "openreplay-buckets";
-            }
-            // lib.optionalAttrs (sec.loadCredential != [ ]) { LoadCredential = sec.loadCredential; }
-            // lib.optionalAttrs (sec.environment != { }) {
-              Environment = lib.mapAttrsToList (n: v: "${n}=${v}") sec.environment;
-            };
+          secretsNeeded = [ "AWS_SECRET_ACCESS_KEY" ];
+          path = [ pkgs.minio-client ];
+          # mc writes its config under $HOME (the openreplay user's home is the state
+          # dir, which this one-shot does not own). Give it a private, writable,
+          # ephemeral config dir instead.
+          extraServiceConfig.RuntimeDirectory = "openreplay-buckets";
           script =
             let
-              sec = resolveSecrets [ "AWS_SECRET_ACCESS_KEY" ];
               assetsPolicy = pkgs.writeText "sessions-assets-anon-download.json" (
                 builtins.toJSON {
                   Version = "2012-10-17";
@@ -1102,7 +973,6 @@ in
               );
             in
             ''
-              ${sec.preamble}
               export MC_CONFIG_DIR="$RUNTIME_DIRECTORY"
               mc alias set local ${cfg.s3.endpoint} ${cfg.s3.accessKey} "$AWS_SECRET_ACCESS_KEY"
               for b in ${lib.concatStringsSep " " cfg.s3.buckets}; do
@@ -1119,7 +989,6 @@ in
                 done
               ''}
             '';
-          path = [ pkgs.minio-client ];
         };
       })
 
@@ -1127,8 +996,6 @@ in
       {
         openreplay-http = goService {
           name = "http";
-          port = cfg.http.port;
-          metricsPort = cfg.http.metricsPort;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1149,8 +1016,6 @@ in
 
         openreplay-sink = goService {
           name = "sink";
-          port = cfg.sink.port;
-          metricsPort = cfg.sink.metricsPort;
           secretsNeeded = [
             "OR_PG_PASSWORD"
             "OR_REDIS_PASSWORD"
@@ -1166,8 +1031,6 @@ in
 
         openreplay-db = goService {
           name = "db";
-          port = cfg.db.port;
-          metricsPort = cfg.db.metricsPort;
           clickhouse = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1184,8 +1047,6 @@ in
 
         openreplay-ender = goService {
           name = "ender";
-          port = cfg.ender.port;
-          metricsPort = cfg.ender.metricsPort;
           secretsNeeded = [
             "OR_PG_PASSWORD"
             "OR_REDIS_PASSWORD"
@@ -1199,8 +1060,6 @@ in
 
         openreplay-storage = goService {
           name = "storage";
-          port = cfg.storage.port;
-          metricsPort = cfg.storage.metricsPort;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1216,8 +1075,6 @@ in
 
         openreplay-assets = goService {
           name = "assets";
-          port = cfg.assets.port;
-          metricsPort = cfg.assets.metricsPort;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1238,8 +1095,6 @@ in
         # its health handler), like sink/db/ender/storage.
         openreplay-heuristics = goService {
           name = "heuristics";
-          port = cfg.heuristics.port;
-          metricsPort = cfg.heuristics.metricsPort;
           secretsNeeded = [ "OR_REDIS_PASSWORD" ];
           environment = {
             GROUP_HEURISTICS = "heuristics";
@@ -1255,8 +1110,6 @@ in
         # blobs dir (the service manages its own canvas/ subtree).
         openreplay-canvases = goService {
           name = "canvases";
-          port = cfg.canvases.port;
-          metricsPort = cfg.canvases.metricsPort;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1279,8 +1132,6 @@ in
         # (screenshots/ subtree via SCREENSHOTS_DIR).
         openreplay-images = goService {
           name = "images";
-          port = cfg.images.port;
-          metricsPort = cfg.images.metricsPort;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1303,8 +1154,6 @@ in
         # the spots bucket already exist. FS_DIR is the shared blobs dir (SPOTS_DIR).
         openreplay-spot = goService {
           name = "spot";
-          port = cfg.spot.port;
-          metricsPort = cfg.spot.metricsPort;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1324,8 +1173,6 @@ in
         # proxied at /integrations. Binds a TCP port; touches PG, Redis, object store.
         openreplay-integrations = goService {
           name = "integrations";
-          port = cfg.integrations.port;
-          metricsPort = cfg.integrations.metricsPort;
           objectStore = true;
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1341,6 +1188,7 @@ in
 
         # Go "v2" API (dashboard session search etc.)
         openreplay-api = mkService {
+          name = "api";
           description = "OpenReplay Go v2 API";
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1372,29 +1220,16 @@ in
               ASSIST_URL = assistUrlEnv;
               ASSIST_KEY = cfg.assistKey;
             };
-          command = pkgs.writeShellApplication {
-            name = "openreplay-api";
-            runtimeInputs = [ pkgs.coreutils ];
-            text = ''
-              ${(resolveSecrets [
-                "OR_PG_PASSWORD"
-                "OR_REDIS_PASSWORD"
-                "OR_CH_PASSWORD"
-                "AWS_SECRET_ACCESS_KEY"
-                "JWT_SECRET"
-                "JWT_SPOT_SECRET"
-                "ASSIST_JWT_SECRET"
-              ]).preamble
-              }
-              ${dsnPreamble { clickhouse = true; }}
-              mkdir -p "$FS_DIR"
-              exec ${lib.getExe' cfg.package "api"}
-            '';
-          };
+          script = ''
+            ${dsnPreamble { clickhouse = true; }}
+            mkdir -p "$FS_DIR"
+            exec ${lib.getExe' cfg.package "api"}
+          '';
         };
 
         # Python dashboard REST API (chalice; FastAPI/uvicorn)
         openreplay-chalice = mkService {
+          name = "chalice";
           description = "OpenReplay Python dashboard API (chalice)";
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1440,37 +1275,21 @@ in
             sourcemaps_reader = "http://${cfg.listenAddress}:${toString cfg.sourcemapreader.port}/{}/sourcemaps";
           }
           // smtpEnv;
-          command = pkgs.writeShellApplication {
-            name = "openreplay-pyapi";
-            runtimeInputs = [ pkgs.coreutils ];
-            text = ''
-              ${(resolveSecrets [
-                "OR_PG_PASSWORD"
-                "OR_REDIS_PASSWORD"
-                "OR_CH_PASSWORD"
-                "AWS_SECRET_ACCESS_KEY"
-                "JWT_SECRET"
-                "JWT_REFRESH_SECRET"
-                "JWT_SPOT_SECRET"
-                "JWT_SPOT_REFRESH_SECRET"
-                "ASSIST_JWT_SECRET"
-                "EMAIL_PASSWORD"
-              ]).preamble
-              }
-              # The Python API reads these under its own names (python-decouple).
-              export pg_password="''${OR_PG_PASSWORD:-}"
-              export ch_password="''${OR_CH_PASSWORD:-}"
-              export S3_SECRET="''${AWS_SECRET_ACCESS_KEY:-}"
-              ${dsnPreamble { }}
-              exec ${lib.getExe cfg.chalice.package} --host ${cfg.listenAddress} --port ${toString cfg.chalice.port} --proxy-headers --log-level warning
-            '';
-          };
+          script = ''
+            # The Python API reads these under its own names (python-decouple).
+            export pg_password="''${OR_PG_PASSWORD:-}"
+            export ch_password="''${OR_CH_PASSWORD:-}"
+            export S3_SECRET="$AWS_SECRET_ACCESS_KEY"
+            ${dsnPreamble { }}
+            exec ${lib.getExe cfg.chalice.package} --host ${cfg.listenAddress} --port ${toString cfg.chalice.port} --proxy-headers --log-level warning
+          '';
         };
 
         # assist: live sessions / co-browsing (Node + socket.io). Proxy /ws-assist/
         # (socket.io WebSocket upgrade, strip prefix -> /socket) and
         # /assist/ (REST). WebRTC media is peer-to-peer between agent and visitor.
         openreplay-assist = mkService {
+          name = "assist";
           description = "OpenReplay assist server (live sessions / co-browsing)";
           secretsNeeded = [ "ASSIST_JWT_SECRET" ];
           environment = {
@@ -1484,20 +1303,14 @@ in
             redis = "false";
             MAXMINDDB_FILE = "${cfg.dataFiles.maxmind}";
           };
-          command = pkgs.writeShellApplication {
-            name = "openreplay-assist-run";
-            runtimeInputs = [ pkgs.coreutils ];
-            text = ''
-              ${(resolveSecrets [ "ASSIST_JWT_SECRET" ]).preamble}
-              exec ${lib.getExe cfg.assist.package}
-            '';
-          };
+          script = "exec ${lib.getExe cfg.assist.package}";
         };
 
         # sourcemapreader: JS stack-trace symbolication (Node/Express). Called by the
         # chalice API to map minified frames back to source via the
         # sourcemaps bucket. Internal only — not fronted by the proxy.
         openreplay-sourcemapreader = mkService {
+          name = "sourcemapreader";
           description = "OpenReplay sourcemapreader (stack-trace symbolication)";
           secretsNeeded = [ "AWS_SECRET_ACCESS_KEY" ];
           environment = {
@@ -1511,16 +1324,11 @@ in
             S3_KEY = cfg.s3.accessKey;
             AWS_REGION = cfg.s3.region;
           };
-          command = pkgs.writeShellApplication {
-            name = "openreplay-sourcemapreader-run";
-            runtimeInputs = [ pkgs.coreutils ];
-            text = ''
-              ${(resolveSecrets [ "AWS_SECRET_ACCESS_KEY" ]).preamble}
-              # The Node service reads the S3 secret from S3_SECRET.
-              export S3_SECRET="''${AWS_SECRET_ACCESS_KEY:-}"
-              exec ${lib.getExe cfg.sourcemapreader.package}
-            '';
-          };
+          script = ''
+            # The Node service reads the S3 secret from S3_SECRET.
+            export S3_SECRET="$AWS_SECRET_ACCESS_KEY"
+            exec ${lib.getExe cfg.sourcemapreader.package}
+          '';
         };
 
         # alerts: notification scheduler (chalice codebase, uvicorn). Runs
@@ -1528,6 +1336,7 @@ in
         # shares the chalice Python env and DB config. CH_POOL=false /
         # ASSIST_KEY=ignore match upstream's alerts entrypoint.
         openreplay-alerts = mkService {
+          name = "alerts";
           description = "OpenReplay alerts scheduler";
           secretsNeeded = [
             "OR_PG_PASSWORD"
@@ -1563,30 +1372,13 @@ in
             ASSIST_KEY = "ignore";
           }
           // smtpEnv;
-          command = pkgs.writeShellApplication {
-            name = "openreplay-alerts-run";
-            runtimeInputs = [ pkgs.coreutils ];
-            text = ''
-              ${(resolveSecrets [
-                "OR_PG_PASSWORD"
-                "OR_REDIS_PASSWORD"
-                "OR_CH_PASSWORD"
-                "AWS_SECRET_ACCESS_KEY"
-                "JWT_SECRET"
-                "JWT_REFRESH_SECRET"
-                "JWT_SPOT_SECRET"
-                "JWT_SPOT_REFRESH_SECRET"
-                "ASSIST_JWT_SECRET"
-                "EMAIL_PASSWORD"
-              ]).preamble
-              }
-              export pg_password="''${OR_PG_PASSWORD:-}"
-              export ch_password="''${OR_CH_PASSWORD:-}"
-              export S3_SECRET="''${AWS_SECRET_ACCESS_KEY:-}"
-              ${dsnPreamble { }}
-              exec ${lib.getExe cfg.alerts.package} --host ${cfg.listenAddress} --port ${toString cfg.alerts.port} --log-level warning
-            '';
-          };
+          script = ''
+            export pg_password="''${OR_PG_PASSWORD:-}"
+            export ch_password="''${OR_CH_PASSWORD:-}"
+            export S3_SECRET="$AWS_SECRET_ACCESS_KEY"
+            ${dsnPreamble { }}
+            exec ${lib.getExe cfg.alerts.package} --host ${cfg.listenAddress} --port ${toString cfg.alerts.port} --log-level warning
+          '';
         };
       }
     ];
