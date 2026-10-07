@@ -30,8 +30,7 @@
           openreplay-sourcemap-uploader = pkgs.callPackage ./nix/packages/openreplay-sourcemap-uploader.nix {
             inherit openreplay-src;
           };
-          # The chalice dashboard API + alerts scheduler run from ${openreplay-src}/api against this interpreter
-          # (uvicorn + the deps from api/requirements.txt) and therefore requires python packages in it's environment
+          # The chalice API and alerts scheduler run from ${openreplay-src}/api against this interpreter.
           pythonEnv = pkgs.python313.withPackages (
             ps: with ps; [
               fastapi
@@ -63,7 +62,7 @@
           openreplay-player = pkgs.callPackage ./nix/packages/openreplay-player.nix {
             inherit openreplay-src;
           };
-          # Server only; for the interactive UI, override with the player:
+          # Server only; add the UI with:
           #   openreplay-mcp.override { withPlayer = openreplay-player; }
           openreplay-mcp = pkgs.callPackage ./nix/packages/openreplay-mcp.nix {
             inherit openreplay-src;
@@ -111,15 +110,13 @@
           program = pkgs.lib.getExe self.packages.${system}.openreplay-sourcemap-uploader;
         };
       };
-      # `nix-update` for the update workflow (see .github/workflows/update.yml),
-      # entered with `nix develop`.
+      # nix-update for the update workflow (.github/workflows/update.yml).
       devShells.${system}.default = pkgs.mkShell {
         packages = [
           pkgs.nix-update
           pkgs.git
         ];
-        # nix-update's --use-update-script builds a wrapper via `import <nixpkgs>`,
-        # so it needs <nixpkgs> on NIX_PATH (CI gets this from install-nix-action).
+        # nix-update's --use-update-script needs <nixpkgs> on NIX_PATH.
         NIX_PATH = "nixpkgs=flake:nixpkgs";
       };
       formatter.${system} = pkgs.nixfmt;

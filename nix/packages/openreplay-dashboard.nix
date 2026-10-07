@@ -16,8 +16,7 @@ stdenv.mkDerivation {
 
   offlineCache = yarn-berry_4.fetchYarnBerryDeps {
     inherit src;
-    # Platform-specific optional deps (darwin/win/musl) lack a checksum in the v8
-    # lockfile; regenerate with: yarn-berry_4.yarn-berry-fetcher missing-hashes frontend/yarn.lock
+    # Platform-specific optional deps (darwin/win/musl) lack a checksum in the v8 lockfile; regenerate with: yarn-berry_4.yarn-berry-fetcher missing-hashes frontend/yarn.lock
     missingHashes = ./openreplay-dashboard-missing-hashes.json;
     hash = "sha256-JkVJDmqWPlXXT2S2Ct9Dmp2pKhnMc4vjqo4/3xOdy2E=";
   };
@@ -41,8 +40,7 @@ stdenv.mkDerivation {
     cp -r --reflink=auto "$offlineCache"/cache/. .yarn/cache/
     chmod -R u+w .yarn/cache
     export YARN_CACHE_FOLDER="$PWD/.yarn/cache"
-    # skip-build: don't run postinstall scripts (cypress downloads a binary
-    # over the network; native modules use their prebuilt binaries at runtime).
+    # skip-build: cypress's postinstall downloads a binary; native modules ship prebuilt.
     node .yarn/releases/yarn-4.7.0.cjs install --immutable --mode=skip-build
     runHook postConfigure
   '';

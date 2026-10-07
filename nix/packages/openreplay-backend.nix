@@ -19,8 +19,7 @@ buildGoModule {
 
   patches = [
     ./openreplay-backend-metrics-port.patch
-    # Make GeoIP optional: MAXMINDDB_FILE unset -> no-op geo enrichment instead
-    # of failing http/assist at startup.
+    # Make GeoIP optional: unset MAXMINDDB_FILE should no-op, not fail startup.
     ./openreplay-backend-no-geoip.patch
   ];
 

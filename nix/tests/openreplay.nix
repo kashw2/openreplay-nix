@@ -72,6 +72,19 @@ pkgs.testers.runNixOSTest {
           };
         };
 
+      # Secrets are file paths only. systemd reads LoadCredential sources as root, so /etc files are fine here.
+      environment.etc =
+        lib.mapAttrs' (name: value: lib.nameValuePair "openreplay-secrets/${name}" { text = value; })
+          {
+            "s3-secret-key" = "minioadminpassword";
+            "token-secret" = "test-token-secret";
+            "jwt-secret" = "test-jwt-secret";
+            "jwt-refresh-secret" = "test-jwt-refresh-secret";
+            "jwt-spot-secret" = "test-jwt-spot-secret";
+            "jwt-spot-refresh-secret" = "test-jwt-spot-refresh-secret";
+            "assist-jwt-secret" = "test-assist-jwt-secret";
+          };
+
       services.openreplay = {
         enable = true;
 
@@ -91,17 +104,17 @@ pkgs.testers.runNixOSTest {
           endpoint = "http://127.0.0.1:9002";
           region = "us-east-1";
           accessKey = "minioadmin";
-          secretKey = "minioadminpassword";
+          secretKeyFile = "/etc/openreplay-secrets/s3-secret-key";
           disableSslVerify = true;
         };
 
         secrets = {
-          tokenSecret = "test-token-secret";
-          jwtSecret = "test-jwt-secret";
-          jwtRefreshSecret = "test-jwt-refresh-secret";
-          jwtSpotSecret = "test-jwt-spot-secret";
-          jwtSpotRefreshSecret = "test-jwt-spot-refresh-secret";
-          assistJwtSecret = "test-assist-jwt-secret";
+          tokenSecretFile = "/etc/openreplay-secrets/token-secret";
+          jwtSecretFile = "/etc/openreplay-secrets/jwt-secret";
+          jwtRefreshSecretFile = "/etc/openreplay-secrets/jwt-refresh-secret";
+          jwtSpotSecretFile = "/etc/openreplay-secrets/jwt-spot-secret";
+          jwtSpotRefreshSecretFile = "/etc/openreplay-secrets/jwt-spot-refresh-secret";
+          assistJwtSecretFile = "/etc/openreplay-secrets/assist-jwt-secret";
         };
       };
 
@@ -167,8 +180,7 @@ pkgs.testers.runNixOSTest {
     with subtest("backend workers start"):
         for svc in ["http", "sink", "db", "ender", "storage", "assets", "heuristics", "canvases"]:
             machine.wait_for_unit(f"openreplay-{svc}.service")
-        # Only http/integrations bind a TCP port; the rest are pure Redis-Streams
-        # consumers (health handler, no ListenAndServe), so wait_for_unit suffices.
+        # Only http/integrations bind a TCP port; the rest are pure stream consumers.
         machine.wait_for_open_port(8100)
 
     with subtest("integrations service starts and listens"):
@@ -176,8 +188,7 @@ pkgs.testers.runNixOSTest {
         machine.wait_for_open_port(8110)
 
     with subtest("images service starts and listens"):
-        # Binds a TCP port for mobile screenshot uploads (/v1/mobile/images), unlike
-        # the pure Redis-Streams consumers above.
+        # Binds a TCP port for mobile screenshot uploads, unlike the consumers above.
         machine.wait_for_unit("openreplay-images.service")
         machine.wait_for_open_port(8115)
 
